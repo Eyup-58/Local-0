@@ -1,0 +1,16 @@
+{
+  "_why_rejected": "available:false with unavailable_reason:null. An unreadable sensor must carry prose the UI can show the user. A silent gap is indistinguishable from a bug, which is exactly the failure this contract exists to prevent.",
+  "v": 1,
+  "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "ts": "2026-08-11T09:14:02.117Z",
+  "type": "hello",
+  "payload": {
+    "component": "system",
+    "app_version": "0.1.0",
+    "elevated": false,
+    "poll_interval_ms": 1000,
+    "sensors": [
+      { "field": "cpu.temperature_c", "available": false, "source": "none", "unavailable_reason": null }
+    ]
+  }
+}

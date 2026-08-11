@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "id": "c07e5a13-2f8b-4d90-a6e4-7b1c9d3a0e25",
+  "ts": "2026-08-11T09:14:04.002Z",
+  "type": "error",
+  "payload": {
+    "code": "sensor_read_failed",
+    "message": "GPU adapter memory counter returned no instances; VRAM will report as unavailable until the next successful read.",
+    "in_reply_to": null
+  }
+}

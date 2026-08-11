@@ -1,0 +1,49 @@
+# --- secrets: these lines exist before any key does ---
+.env
+.env.*
+!.env.example
+*.local.json
+config.local.*
+secrets.*
+*.pem
+*.key
+*.pfx
+credentials*
+
+# --- runtime data: may contain untrusted ingested content ---
+/logs
+audit.jsonl
+/data
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.log
+
+# --- build output: C# ---
+[Bb]in/
+[Oo]bj/
+*.user
+
+# --- build output: Python ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- build output: TypeScript ---
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- bench output ---
+/bench/results/
+
+# --- tooling / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+Thumbs.db
+desktop.ini

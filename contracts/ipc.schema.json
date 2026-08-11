@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local-zero.invalid/contracts/ipc.schema.json",
+  "title": "Local Zero IPC contract (system <-> brain)",
+  "description": "Newline-delimited JSON over a Windows named pipe. One JSON object per line, UTF-8, no BOM. This file is the single source of truth for the C# system layer and the Python brain layer. Changing it is a standalone commit and requires human approval. See docs/CONTRACTS.md.",
+
+  "$defs": {
+    "protocolVersion": {
+      "description": "Contract major version. A receiver MUST drop any message whose v it does not implement.",
+      "type": "integer",
+      "const": 1
+    },
+    "messageId": {
+      "description": "UUIDv4 assigned by the sender. Unique per message, used to correlate errors.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 timestamp in UTC, millisecond precision, always ending in Z.",
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "nullableNumber": {
+      "description": "A measured value, or null when the sensor is unavailable. null means UNAVAILABLE and is rendered as a labelled gap. It is never rendered as zero, never interpolated, never inferred from load. See docs/SECURITY.md and CLAUDE.md invariant 10.",
+      "type": ["number", "null"]
+    },
+    "nullableInteger": {
+      "description": "As nullableNumber, for integral quantities such as byte counts.",
+      "type": ["integer", "null"]
+    },
+    "percent": {
+      "description": "A percentage in [0, 100], or null when unavailable.",
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 100
+    },
+
+    "sensorCapability": {
+      "description": "Declares, once at connect time, whether a telemetry field will ever carry a value on this machine. The UI builds its labelled gaps from this, so it never has to guess why a field is null.",
+      "type": "object",
+      "properties": {
+        "field": {
+          "description": "Dotted path into telemetry.sample payload, e.g. 'cpu.temperature_c'.",
+          "type": "string",
+          "minLength": 1
+        },
+        "available": { "type": "boolean" },
+        "source": {
+          "description": "How the value is obtained. 'pdh_english' is the only permitted performance-counter source; localized counter lookup is forbidden. See CLAUDE.md invariant 9.",
+          "type": "string",
+          "enum": ["pdh_english", "win32_api", "wmi", "adlx", "none"]
+        },
+        "unavailable_reason": {
+          "description": "Required and non-null when available is false. Shown verbatim to the user, e.g. 'requires kernel driver - not installed'.",
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["field", "available", "source", "unavailable_reason"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "available": { "const": false } }, "required": ["available"] },
+          "then": { "properties": { "unavailable_reason": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "available": { "const": false } }, "required": ["available"] },
+          "then": { "properties": { "source": { "const": "none" } } }
+        }
+      ]
+    },
+
+    "helloMessage": {
+      "description": "system -> brain. First message on every new pipe connection. The brain MUST NOT accept telemetry before a valid hello.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "hello" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "component": { "const": "system" },
+            "app_version": {
+              "description": "Semantic version of the C# sidecar binary.",
+              "type": "string",
+              "pattern": "^\\d+\\.\\d+\\.\\d+$"
+            },
+            "elevated": {
+              "description": "MUST be false. Local Zero runs every process asInvoker; a true value here is a contract violation and the brain MUST refuse the connection. See docs/ARCHITECTURE.md privilege model.",
+              "const": false
+            },
+            "poll_interval_ms": {
+              "description": "Interval at which the sidecar will emit telemetry.sample.",
+              "type": "integer",
+              "minimum": 250,
+              "maximum": 60000
+            },
+            "sensors": {
+              "description": "Complete capability descriptor. Every field the UI can display appears here exactly once, available or not.",
+              "type": "array",
+              "items": { "$ref": "#/$defs/sensorCapability" },
+              "minItems": 1
+            }
+          },
+          "required": ["component", "app_version", "elevated", "poll_interval_ms", "sensors"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "telemetrySampleMessage": {
+      "description": "system -> brain. One reading of the machine. Emitted on the sidecar's own tick; the brain never polls.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "telemetry.sample" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "seq": {
+              "description": "Monotonically increasing per connection, starting at 0. A gap tells the consumer samples were dropped.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "sampled_at": { "$ref": "#/$defs/timestamp" },
+            "cpu": {
+              "type": "object",
+              "properties": {
+                "total_percent": { "$ref": "#/$defs/percent" },
+                "per_core_percent": {
+                  "type": ["array", "null"],
+                  "items": { "type": "number", "minimum": 0, "maximum": 100 }
+                },
+                "frequency_mhz": { "$ref": "#/$defs/nullableNumber" },
+                "temperature_c": {
+                  "description": "Expected to be null on this machine: no ring-0 driver, so no CPU temperature source exists. See docs/ARCHITECTURE.md sensor strategy.",
+                  "$ref": "#/$defs/nullableNumber"
+                }
+              },
+              "required": ["total_percent", "per_core_percent", "frequency_mhz", "temperature_c"],
+              "additionalProperties": false
+            },
+            "memory": {
+              "type": "object",
+              "properties": {
+                "used_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "total_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "commit_used_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "commit_limit_bytes": { "$ref": "#/$defs/nullableInteger" }
+              },
+              "required": ["used_bytes", "total_bytes", "commit_used_bytes", "commit_limit_bytes"],
+              "additionalProperties": false
+            },
+            "gpu": {
+              "type": "object",
+              "properties": {
+                "utilization_percent": {
+                  "description": "Sum over GPU Engine instances, clamped to 100. Measured readable unelevated on this machine.",
+                  "$ref": "#/$defs/percent"
+                },
+                "vram_used_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "vram_total_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "temperature_c": {
+                  "description": "Null until the AMD ADLX spike resolves. See docs/ROADMAP.md M5 and the U1 open question.",
+                  "$ref": "#/$defs/nullableNumber"
+                }
+              },
+              "required": ["utilization_percent", "vram_used_bytes", "vram_total_bytes", "temperature_c"],
+              "additionalProperties": false
+            },
+            "uptime_seconds": { "$ref": "#/$defs/nullableInteger" }
+          },
+          "required": ["seq", "sampled_at", "cpu", "memory", "gpu", "uptime_seconds"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "errorMessage": {
+      "description": "Either direction. Reports a fault without terminating the connection. The message field is user-safe prose; detail is for the log. Neither may contain a secret, a full filesystem path outside allowed roots, or a stack trace.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "error" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "schema_violation",
+                "unsupported_version",
+                "sensor_read_failed",
+                "handshake_required",
+                "internal_error"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "in_reply_to": {
+              "description": "id of the offending message when one exists, otherwise null.",
+              "oneOf": [{ "$ref": "#/$defs/messageId" }, { "type": "null" }]
+            }
+          },
+          "required": ["code", "message", "in_reply_to"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/$defs/helloMessage" },
+    { "$ref": "#/$defs/telemetrySampleMessage" },
+    { "$ref": "#/$defs/errorMessage" }
+  ]
+}

@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local-zero.invalid/contracts/ws.schema.json",
+  "title": "Local Zero WebSocket contract (brain <-> ui)",
+  "description": "One JSON object per WebSocket text frame, UTF-8. This file is the single source of truth for the Python brain layer and the TypeScript ui layer. Deliberately a SEPARATE contract from ipc.schema.json even where the shapes coincide: the two boundaries version independently, and the brain is free to reshape what it forwards. Every string in every message is rendered as text; the UI never renders markdown or HTML from any field. See docs/CONTRACTS.md.",
+
+  "$defs": {
+    "protocolVersion": {
+      "description": "Contract major version. A receiver MUST drop any message whose v it does not implement.",
+      "type": "integer",
+      "const": 1
+    },
+    "messageId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 timestamp in UTC, millisecond precision, always ending in Z.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "nullableNumber": {
+      "description": "A measured value, or null when unavailable. null is rendered as a labelled gap, never as zero. See CLAUDE.md invariant 10.",
+      "type": ["number", "null"]
+    },
+    "nullableInteger": {
+      "type": ["integer", "null"]
+    },
+    "percent": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 100
+    },
+
+    "sensorCapability": {
+      "description": "Forwarded from the system layer. The UI builds its labelled gaps from this list so it never has to guess why a value is null.",
+      "type": "object",
+      "properties": {
+        "field": { "type": "string", "minLength": 1 },
+        "available": { "type": "boolean" },
+        "source": {
+          "type": "string",
+          "enum": ["pdh_english", "win32_api", "wmi", "adlx", "none"]
+        },
+        "unavailable_reason": { "type": ["string", "null"] }
+      },
+      "required": ["field", "available", "source", "unavailable_reason"],
+      "additionalProperties": false
+    },
+
+    "clientHelloMessage": {
+      "description": "ui -> brain. First frame the UI sends. The brain MUST NOT stream telemetry before receiving it, and MUST close the socket with an error if v is unsupported.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "client.hello" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "component": { "const": "ui" },
+            "app_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" }
+          },
+          "required": ["component", "app_version"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "serverHelloMessage": {
+      "description": "brain -> ui. Sent once in reply to client.hello, before any telemetry.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "server.hello" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "component": { "const": "brain" },
+            "app_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+            "poll_interval_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+            "system_connected": {
+              "description": "Whether the brain currently holds a live pipe to the system layer. When false the UI shows a disconnected state; it never shows stale numbers as if they were live.",
+              "type": "boolean"
+            },
+            "sensors": {
+              "description": "Empty array is legal and means the system layer has not handshaked yet.",
+              "type": "array",
+              "items": { "$ref": "#/$defs/sensorCapability" }
+            }
+          },
+          "required": ["component", "app_version", "poll_interval_ms", "system_connected", "sensors"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "systemStatusMessage": {
+      "description": "brain -> ui. Emitted whenever the system layer connects or drops. This is what lets the UI degrade honestly instead of freezing on the last sample when the sidecar dies.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "system.status" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "connected": { "type": "boolean" },
+            "since": { "$ref": "#/$defs/timestamp" },
+            "reason": {
+              "description": "User-safe prose explaining a disconnect, or null while connected. Never a stack trace, never a path.",
+              "type": ["string", "null"],
+              "maxLength": 500
+            },
+            "sensors": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/sensorCapability" }
+            }
+          },
+          "required": ["connected", "since", "reason", "sensors"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "telemetrySampleMessage": {
+      "description": "brain -> ui. In M1 the brain forwards the system layer's reading unchanged apart from the envelope. Any future divergence from ipc.schema.json must be documented in docs/CONTRACTS.md, not left implicit.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "telemetry.sample" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "seq": { "type": "integer", "minimum": 0 },
+            "sampled_at": { "$ref": "#/$defs/timestamp" },
+            "cpu": {
+              "type": "object",
+              "properties": {
+                "total_percent": { "$ref": "#/$defs/percent" },
+                "per_core_percent": {
+                  "type": ["array", "null"],
+                  "items": { "type": "number", "minimum": 0, "maximum": 100 }
+                },
+                "frequency_mhz": { "$ref": "#/$defs/nullableNumber" },
+                "temperature_c": { "$ref": "#/$defs/nullableNumber" }
+              },
+              "required": ["total_percent", "per_core_percent", "frequency_mhz", "temperature_c"],
+              "additionalProperties": false
+            },
+            "memory": {
+              "type": "object",
+              "properties": {
+                "used_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "total_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "commit_used_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "commit_limit_bytes": { "$ref": "#/$defs/nullableInteger" }
+              },
+              "required": ["used_bytes", "total_bytes", "commit_used_bytes", "commit_limit_bytes"],
+              "additionalProperties": false
+            },
+            "gpu": {
+              "type": "object",
+              "properties": {
+                "utilization_percent": { "$ref": "#/$defs/percent" },
+                "vram_used_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "vram_total_bytes": { "$ref": "#/$defs/nullableInteger" },
+                "temperature_c": { "$ref": "#/$defs/nullableNumber" }
+              },
+              "required": ["utilization_percent", "vram_used_bytes", "vram_total_bytes", "temperature_c"],
+              "additionalProperties": false
+            },
+            "uptime_seconds": { "$ref": "#/$defs/nullableInteger" }
+          },
+          "required": ["seq", "sampled_at", "cpu", "memory", "gpu", "uptime_seconds"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "errorMessage": {
+      "description": "brain -> ui. User-safe prose only. Rendered as plain text.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "error" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "schema_violation",
+                "unsupported_version",
+                "handshake_required",
+                "system_unavailable",
+                "internal_error"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "in_reply_to": {
+              "oneOf": [{ "$ref": "#/$defs/messageId" }, { "type": "null" }]
+            }
+          },
+          "required": ["code", "message", "in_reply_to"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/$defs/clientHelloMessage" },
+    { "$ref": "#/$defs/serverHelloMessage" },
+    { "$ref": "#/$defs/systemStatusMessage" },
+    { "$ref": "#/$defs/telemetrySampleMessage" },
+    { "$ref": "#/$defs/errorMessage" }
+  ]
+}

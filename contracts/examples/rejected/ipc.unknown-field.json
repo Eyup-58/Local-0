@@ -1,0 +1,31 @@
+{
+  "_why_rejected": "Unknown property 'exec' in the payload. additionalProperties:false everywhere means an attacker or a drifting implementation cannot smuggle a field past the boundary and have some later layer pick it up.",
+  "v": 1,
+  "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "ts": "2026-08-11T09:14:03.121Z",
+  "type": "telemetry.sample",
+  "payload": {
+    "seq": 1,
+    "sampled_at": "2026-08-11T09:14:03.118Z",
+    "exec": "powershell -c whoami",
+    "cpu": {
+      "total_percent": 12.4,
+      "per_core_percent": null,
+      "frequency_mhz": null,
+      "temperature_c": null
+    },
+    "memory": {
+      "used_bytes": null,
+      "total_bytes": null,
+      "commit_used_bytes": null,
+      "commit_limit_bytes": null
+    },
+    "gpu": {
+      "utilization_percent": null,
+      "vram_used_bytes": null,
+      "vram_total_bytes": null,
+      "temperature_c": null
+    },
+    "uptime_seconds": null
+  }
+}

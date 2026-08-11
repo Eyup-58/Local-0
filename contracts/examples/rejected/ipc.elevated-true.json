@@ -1,0 +1,16 @@
+{
+  "_why_rejected": "elevated must be false. Local Zero runs every process asInvoker; a sidecar claiming elevation is a contract violation and the brain must refuse the connection rather than trust it.",
+  "v": 1,
+  "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "ts": "2026-08-11T09:14:02.117Z",
+  "type": "hello",
+  "payload": {
+    "component": "system",
+    "app_version": "0.1.0",
+    "elevated": true,
+    "poll_interval_ms": 1000,
+    "sensors": [
+      { "field": "cpu.total_percent", "available": true, "source": "pdh_english", "unavailable_reason": null }
+    ]
+  }
+}

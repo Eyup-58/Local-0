@@ -1,0 +1,11 @@
+{
+  "_why_rejected": "v:2 is not implemented by this contract revision. Version mismatch fails closed - the receiver drops the message and replies with unsupported_version, rather than best-effort parsing a shape it does not know.",
+  "v": 2,
+  "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "ts": "2026-08-11T09:14:05.300Z",
+  "type": "client.hello",
+  "payload": {
+    "component": "ui",
+    "app_version": "0.1.0"
+  }
+}
