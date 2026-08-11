@@ -147,6 +147,53 @@ Same shape as the IPC error, different code enum (`system_unavailable` replaces
 path and `dangerouslySetInnerHTML` is banned repository-wide. See `SECURITY.md` §5 — this is a
 security control, not a styling choice.
 
+### `approval.request` — brain → ui
+
+Raised when an invocation has passed the name whitelist, the argument schema and path containment,
+and needs a human. Payload: `request_id`, `capability`, `resolved_args`, `affected_paths[]`,
+`side_effect`, `origin`.
+
+**The brain builds this, not a model.** `resolved_args` is the arguments *after* validation and path
+canonicalisation — what will actually run, not what was asked for. `affected_paths` is computed, not
+narrated. `SECURITY.md` §5.
+
+`resolved_args` values are **scalars only**. A nested structure is a rendering decision waiting to be
+got wrong, and rendering decisions are exactly where markup re-enters a payload the user is reading
+in order to decide. `rejected/ws.approval-nested-args.json` holds that line.
+
+### `approval.decision` — ui → brain
+
+Payload: `request_id`, `decision` (`approve` | `reject`).
+
+This is the entire extent of the UI's authority over an invocation: answer one the brain already
+resolved. It cannot construct, alter or re-scope one. `decision` is a closed enum, so a value the
+brain cannot interpret fails closed rather than being read as either answer.
+
+### `approval.resolved` — brain → ui
+
+Payload: `request_id`, `outcome` (`approved` | `rejected` | `expired` | `auto_approved`).
+
+Closes a request out so no dialog lingers over something already settled. `auto_approved` is what
+trust mode produces — it exists so operations the button let through are still *visible*, rather than
+absent because no dialog was ever raised.
+
+### `trust.status` — brain → ui, and `trust.set` — ui → brain
+
+`trust.status` carries `enabled` and `since`; `trust.set` carries `enabled`.
+
+Trust mode bypasses the approval gate for every invocation regardless of `side_effect` or `origin`.
+It does **not** bypass the guard: the name whitelist, the argument schema and path containment run in
+every mode. See `SECURITY.md` §5.
+
+`trust.set` is the only way the state changes, and nothing but the UI can send it. It is not a
+registered capability, so no invocation can reach it, and the state file it writes lives outside
+every capability's `allowed_roots`.
+
+**Why trust state is its own message rather than a field on `server.hello`:** `additionalProperties`
+is `false` everywhere, so adding a field to an existing payload is a breaking change under §5. A new
+message type is additive. The contract shape follows from the versioning rule rather than from
+convenience.
+
 ---
 
 ## 5. Versioning
@@ -183,6 +230,20 @@ change.
 
 This is recorded rather than done quietly, and it is not a precedent: once anything ships, a
 breaking change increments `v`. The reason for the change is in §3.
+
+### Additions in M3 — `v` unchanged
+
+**2026-08-12 — five message types added to the WebSocket contract** for the approval flow and trust
+mode: `approval.request`, `approval.decision`, `approval.resolved`, `trust.status`, `trust.set`.
+`ipc.schema.json` is untouched; the sidecar has no part in approval.
+
+This is **additive**, not an amendment, so `v` stays 1 — the list above names "adding a new message
+`type` that existing receivers may ignore" as non-breaking. Nothing was added to an existing payload,
+and that constraint shaped the design rather than being discovered afterwards: trust state is carried
+by its own `trust.status` message specifically because putting an `enabled` field on `server.hello`
+would have been breaking under the `additionalProperties: false` rule above.
+
+Both ends still ship together, as §5 says additive changes require in practice.
 
 ---
 
@@ -223,14 +284,23 @@ from an assertion into a test:
 | `ipc.elevated-true.json` | A sidecar claiming elevation is refused |
 | `ipc.unavailable-without-reason.json` | An unreadable sensor cannot be silently blank |
 | `ipc.unknown-field.json` | An extra field (`exec`) cannot ride along inside a valid message |
+| `ipc.per-core-out-of-range.json` | A core reading above 100% is refused even though nulls are now legal |
 | `ws.unsupported-version.json` | Version mismatch fails closed |
+| `ws.approval-unknown-decision.json` | A decision the brain cannot interpret fails closed rather than being read as either answer |
+| `ws.approval-nested-args.json` | `resolved_args` values stay scalar, so markup cannot re-enter the payload the user reads to decide |
+
+One valid example is worth naming for the same reason: `ws.approval-request-untrusted.json` is a
+**valid** message whose `content` argument carries `<img src=x onerror=alert(1)>` and an instruction
+to approve itself. It is legal on the wire on purpose — the contract's job is not to filter that, and
+attempting to would produce the illusion of cleaning. Rendering it as literal text is the UI's job,
+and this file is the fixture that proves it does.
 
 The validator selects the schema by filename prefix (`ipc.` / `ws.`) and narrows to the single
 message definition matching the `type` field before validating — otherwise the top-level `oneOf`
 collapses every failure into "not valid under any of the given schemas", which cannot distinguish a
 message rejected for the intended reason from one rejected by accident.
 
-Current state, verified 2026-08-11: **12/12 expectations hold** (8 valid, 4 rejected).
+Current state, verified 2026-08-12: **22/22 expectations hold** (15 valid, 7 rejected).
 
 ---
 

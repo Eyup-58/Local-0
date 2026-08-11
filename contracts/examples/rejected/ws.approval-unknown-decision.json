@@ -1,0 +1,11 @@
+{
+  "_why_rejected": "decision is 'maybe'. The enum is approve or reject and nothing else: a decision the brain cannot interpret must fail closed rather than be treated as either answer, and 'unrecognised therefore proceed' is the failure this contract exists to prevent.",
+  "v": 1,
+  "id": "9b3e5c71-8d24-4f60-a917-3c8e025bd47f",
+  "ts": "2026-08-12T18:22:19.902Z",
+  "type": "approval.decision",
+  "payload": {
+    "request_id": "7d2c9e14-5a6b-4c38-9f01-e3d47b285a9c",
+    "decision": "maybe"
+  }
+}

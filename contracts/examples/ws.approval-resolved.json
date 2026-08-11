@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "id": "4a9d3c85-6b12-4e70-9f83-2d5c17e04b6a",
+  "ts": "2026-08-12T18:22:19.915Z",
+  "type": "approval.resolved",
+  "payload": {
+    "request_id": "7d2c9e14-5a6b-4c38-9f01-e3d47b285a9c",
+    "outcome": "rejected"
+  }
+}

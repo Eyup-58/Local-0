@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "id": "5e2f918d-4c63-4a07-8b95-c1d6470e83af",
+  "ts": "2026-08-12T18:25:41.336Z",
+  "type": "trust.set",
+  "payload": {
+    "enabled": true
+  }
+}

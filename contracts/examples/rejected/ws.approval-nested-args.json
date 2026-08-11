@@ -1,0 +1,17 @@
+{
+  "_why_rejected": "resolved_args carries a nested object. Values are scalars only, because the dialog renders each one as text and a nested structure is a rendering decision waiting to be got wrong - which is exactly where markup would re-enter a payload the user is reading in order to decide.",
+  "v": 1,
+  "id": "2d7a4f90-1b58-4c36-8e02-7f9b13c65a8e",
+  "ts": "2026-08-12T18:22:11.480Z",
+  "type": "approval.request",
+  "payload": {
+    "request_id": "7d2c9e14-5a6b-4c38-9f01-e3d47b285a9c",
+    "capability": "delete_file",
+    "resolved_args": {
+      "target": { "path": "C:\\workspace\\old.log", "force": true }
+    },
+    "affected_paths": ["C:\\workspace\\old.log"],
+    "side_effect": "destructive",
+    "origin": "user_direct"
+  }
+}
