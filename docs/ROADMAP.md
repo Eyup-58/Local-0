@@ -161,20 +161,51 @@ M3 approval flow builds.
 
 Backend payload → UI dialog → human decision → result.
 
-Exit criteria:
+Exit criteria, verified 2026-08-12. brain **191 passed**, ui **88 passed** with typecheck and build
+clean, contracts **22/22**, system 69 untouched.
 
-- [ ] The dialog shows the resolved capability, resolved arguments, and the full affected-path list
-- [ ] **Markup injected into any payload field is rendered as literal text.** Test: place
-      `<img src=x onerror=...>` and `[click](javascript:...)` into `resolved_args` and assert the
-      DOM contains text, not elements
-- [ ] `dangerouslySetInnerHTML` appears nowhere in `ui/` (grep is evidence)
-- [ ] No markdown renderer is imported on the approval path
-- [ ] The `origin` badge works; `untrusted_content` makes the dialog visually distinct and defaults
-      the selection to **Reject**
-- [ ] Enter is not bound to approve
-- [ ] The approve control on a `destructive` operation stays disabled for 2 s
-- [ ] After a rejection the identical invocation is not retried in the same session — test
-- [ ] `/threat-check` reports no CRITICAL or HIGH findings
+- [x] The dialog shows the resolved capability, resolved arguments, and the full affected-path list —
+      `ApprovalDialog.test.tsx`. An empty `affected_paths` renders as "No files are affected" rather
+      than as an absent section: "touches nothing" and "we did not work out what it touches" are
+      different facts
+- [x] **Markup injected into any payload field is rendered as literal text** — three tests, and the
+      injection case reads the checked-in fixture `ws.approval-request-untrusted.json` rather than a
+      string written in the test. That file is a *valid* message carrying
+      `<img src=x onerror=alert(1)>` and an instruction to approve itself; it is legal on the wire on
+      purpose, because filtering it in the contract would be the illusion of cleaning. The tests
+      assert the `img` element does not exist and its text *is* visible. A markdown link and a
+      `<b>`-wrapped capability name are covered the same way
+- [x] `dangerouslySetInnerHTML` appears nowhere in `ui/` — `bans.test.ts`, repository-wide rather
+      than approval-path-only, so it cannot be reintroduced anywhere
+- [x] No markdown renderer is imported on the approval path — same suite, matching every renderer by
+      import
+- [x] The `origin` badge works; `untrusted_content` makes the dialog visually distinct and defaults
+      the selection to **Reject** — and Reject holds focus for *every* request, not only untrusted
+      ones, which is stricter than this asks. A keystroke already in flight when a dialog appears
+      should not land on Approve whatever the origin
+- [x] Enter is not bound to approve — tested
+- [x] The approve control on a `destructive` operation stays disabled for 2 s — tested with fake
+      timers. Reject is never delayed: making the safe answer wait would be an argument for the
+      dangerous one
+- [x] After a rejection the identical invocation is not retried in the same session —
+      `test_an_invocation_already_rejected_is_not_queued_again`, keyed on the `args_hash` the audit
+      already computes
+- [x] `/threat-check` reports no CRITICAL or HIGH findings — run 2026-08-12. One MEDIUM and one LOW,
+      both fixed: an approved operation whose handler raised tore down the socket and told the user
+      nothing, and it ran synchronously on the event loop. Both closed in the same change, with a
+      test. One further MEDIUM is documentation rather than code: approval widens the check-to-use
+      window of `SECURITY.md` §4 from microseconds to however long a human takes to answer, and that
+      is now recorded there
+
+**Trust mode was added in this milestone at the user's explicit request** and is not an exit
+criterion because the ROADMAP predates it. It bypasses approval for every invocation regardless of
+`side_effect` or `origin` and persists across restarts, chosen with the consequences stated. What it
+does not bypass is the guard — steps 1–3 run in every mode, held by four tests. See `SECURITY.md` §5.
+
+**Not demonstrated in a browser.** Nothing can raise a real dialog yet: the UI cannot construct an
+invocation by contract, and the planner that will is M4. `BrainServices.invoke()` is the entry point
+and only tests call it. Every criterion above is met by test rather than by clicking, and that is
+stated rather than glossed.
 
 ---
 
