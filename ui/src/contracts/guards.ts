@@ -12,12 +12,16 @@
 
 import {
   CONTRACT_VERSION,
+  type ApprovalOutcome,
   type CpuPayload,
   type GpuPayload,
   type MemoryPayload,
+  type Origin,
+  type ResolvedArgument,
   type SensorCapability,
   type SensorSource,
   type ServerMessage,
+  type SideEffect,
   type TelemetryPayload,
   type WsErrorCode,
 } from "./types";
@@ -35,6 +39,12 @@ const ERROR_CODES: readonly WsErrorCode[] = [
   "system_unavailable",
   "internal_error",
 ];
+
+const SIDE_EFFECTS: readonly SideEffect[] = ["read", "write", "destructive"];
+
+const ORIGINS: readonly Origin[] = ["user_direct", "untrusted_content"];
+
+const APPROVAL_OUTCOMES: readonly ApprovalOutcome[] = ["approved", "rejected", "expired", "auto_approved"];
 
 const ENVELOPE_FIELDS = ["v", "id", "ts", "type", "payload"] as const;
 
@@ -58,6 +68,15 @@ function isString(value: unknown): value is string {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && keys.every((key) => key in value);
+}
+
+function isResolvedArgs(value: unknown): value is Record<string, ResolvedArgument> {
+  if (!isRecord(value)) return false;
+
+  return Object.values(value).every(
+    (entry) =>
+      entry === null || typeof entry === "string" || typeof entry === "boolean" || typeof entry === "number",
+  );
 }
 
 function isSensorCapability(value: unknown): value is SensorCapability {
@@ -162,6 +181,59 @@ function validatePayload(type: string, payload: unknown): string | null {
       if (!isString(payload.code) || !ERROR_CODES.includes(payload.code as WsErrorCode)) return "error code is unknown";
       if (!isString(payload.message) || payload.message.length === 0) return "error message is empty";
       if (payload.in_reply_to !== null && !isString(payload.in_reply_to)) return "error in_reply_to is malformed";
+      return null;
+    }
+
+    case "approval.request": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (
+        !hasExactKeys(payload, [
+          "request_id",
+          "capability",
+          "resolved_args",
+          "affected_paths",
+          "side_effect",
+          "origin",
+        ])
+      ) {
+        return "approval.request payload has unexpected fields";
+      }
+      if (!isString(payload.request_id)) return "approval.request request_id is not a string";
+      if (!isString(payload.capability) || payload.capability.length === 0) {
+        return "approval.request capability is empty";
+      }
+      if (!isResolvedArgs(payload.resolved_args)) {
+        // Scalars only. A nested value would have to be rendered by some rule the dialog invents,
+        // and an invented rendering rule on the approval path is how markup gets back in.
+        return "approval.request resolved_args contains a non-scalar value";
+      }
+      if (!Array.isArray(payload.affected_paths) || !payload.affected_paths.every(isString)) {
+        return "approval.request affected_paths is not a list of strings";
+      }
+      if (!isString(payload.side_effect) || !SIDE_EFFECTS.includes(payload.side_effect as SideEffect)) {
+        return "approval.request side_effect is unknown";
+      }
+      if (!isString(payload.origin) || !ORIGINS.includes(payload.origin as Origin)) {
+        return "approval.request origin is unknown";
+      }
+      return null;
+    }
+
+    case "approval.resolved": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["request_id", "outcome"])) return "approval.resolved payload has unexpected fields";
+      if (!isString(payload.request_id)) return "approval.resolved request_id is not a string";
+      if (!isString(payload.outcome) || !APPROVAL_OUTCOMES.includes(payload.outcome as ApprovalOutcome)) {
+        return "approval.resolved outcome is unknown";
+      }
+      return null;
+    }
+
+    case "trust.status": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["enabled", "since"])) return "trust.status payload has unexpected fields";
+      if (typeof payload.enabled !== "boolean") return "trust.status enabled is not a boolean";
+      if (!isString(payload.since)) return "trust.status since is not a string";
       return null;
     }
 

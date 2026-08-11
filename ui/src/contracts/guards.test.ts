@@ -37,16 +37,19 @@ describe("contract examples", () => {
     expect(rejected.length).toBeGreaterThan(0);
   });
 
-  it.each(valid.filter((name) => name !== "ws.client-hello.json"))("accepts %s", (name) => {
+  // Messages the UI *sends*. parseServerMessage validates inbound frames, so accepting one of these
+  // would mean the guards are wider than the direction of the contract - the UI would be willing to
+  // receive a decision it is supposed to be the one making.
+  const uiSent = ["ws.client-hello.json", "ws.approval-decision.json", "ws.trust-set.json"];
+
+  it.each(valid.filter((name) => !uiSent.includes(name)))("accepts %s", (name) => {
     const result = parseServerMessage(load(join(EXAMPLES_DIR, name)));
 
     expect(result.ok, result.ok ? "" : result.reason).toBe(true);
   });
 
-  it("refuses ws.client-hello.json, which the UI sends rather than receives", () => {
-    // The UI holds no authority and the brain never sends it a client.hello. Accepting one would
-    // mean the guards are wider than the direction of the contract.
-    const result = parseServerMessage(load(join(EXAMPLES_DIR, "ws.client-hello.json")));
+  it.each(uiSent)("refuses %s, which the UI sends rather than receives", (name) => {
+    const result = parseServerMessage(load(join(EXAMPLES_DIR, name)));
 
     expect(result.ok).toBe(false);
   });

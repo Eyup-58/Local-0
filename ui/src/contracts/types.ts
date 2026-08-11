@@ -103,5 +103,61 @@ export type WsError = Envelope<
   }
 >;
 
+export type SideEffect = "read" | "write" | "destructive";
+
+export type Origin = "user_direct" | "untrusted_content";
+
+export type ApprovalOutcome = "approved" | "rejected" | "expired" | "auto_approved";
+
+/**
+ * One resolved argument as it arrives for display.
+ *
+ * Scalars only, and the schema holds the same line. A nested structure would be a rendering
+ * decision, and rendering decisions are where markup gets back into a payload the user is reading
+ * in order to decide something.
+ */
+export type ResolvedArgument = string | number | boolean | null;
+
+export type ApprovalRequest = Envelope<
+  "approval.request",
+  {
+    readonly request_id: string;
+    readonly capability: string;
+    /** Post-validation, post-canonicalisation: what will run, not what was asked for. */
+    readonly resolved_args: Readonly<Record<string, ResolvedArgument>>;
+    /** Computed by the brain. An empty array means nothing is touched, not that it is unknown. */
+    readonly affected_paths: readonly string[];
+    readonly side_effect: SideEffect;
+    readonly origin: Origin;
+  }
+>;
+
+export type ApprovalResolved = Envelope<
+  "approval.resolved",
+  {
+    readonly request_id: string;
+    readonly outcome: ApprovalOutcome;
+  }
+>;
+
+export type TrustStatus = Envelope<
+  "trust.status",
+  {
+    /**
+     * When true, approval is bypassed for every invocation regardless of side_effect or origin.
+     * The guard's other steps still run: trust mode skips the approval gate, not containment.
+     */
+    readonly enabled: boolean;
+    readonly since: string;
+  }
+>;
+
 /** Everything the brain may send to the UI. */
-export type ServerMessage = ServerHello | SystemStatus | TelemetrySample | WsError;
+export type ServerMessage =
+  | ServerHello
+  | SystemStatus
+  | TelemetrySample
+  | WsError
+  | ApprovalRequest
+  | ApprovalResolved
+  | TrustStatus;

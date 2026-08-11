@@ -7,7 +7,7 @@
  */
 
 import { parseServerMessage } from "../contracts/guards";
-import type { SensorCapability, TelemetryPayload } from "../contracts/types";
+import type { ApprovalRequest, SensorCapability, TelemetryPayload } from "../contracts/types";
 
 export type LinkState = "connecting" | "open" | "closed";
 
@@ -28,6 +28,18 @@ export interface TelemetryState {
   readonly missedSamples: number;
   readonly lastError: string | null;
   readonly lastSeq: number | null;
+  /**
+   * The approval currently awaiting an answer, or null.
+   *
+   * One at a time on purpose. A queue of dialogs is a queue of things to click through, and
+   * clicking through is the failure mode the approval gate exists to prevent.
+   */
+  readonly pendingApproval: ApprovalRequest["payload"] | null;
+  /**
+   * Whether the user has turned approval off. Reported by the brain, never assumed by the UI - the
+   * UI showing "off" while the brain has it on would be the more dangerous of the two mistakes.
+   */
+  readonly trustEnabled: boolean;
 }
 
 export const initialState: TelemetryState = {
@@ -42,6 +54,10 @@ export const initialState: TelemetryState = {
   missedSamples: 0,
   lastError: null,
   lastSeq: null,
+  pendingApproval: null,
+  // Off until the brain says otherwise. Defaulting to on would mean a UI that had not yet heard
+  // from the brain displayed the permissive state, which is the wrong way round to be wrong.
+  trustEnabled: false,
 };
 
 export type TelemetryAction =
@@ -110,6 +126,19 @@ function applyFrame(state: TelemetryState, raw: string, now: number): TelemetryS
 
     case "error":
       return { ...state, lastError: message.payload.message };
+
+    case "approval.request":
+      return { ...state, pendingApproval: message.payload };
+
+    case "approval.resolved":
+      // Only clears the dialog it names. A resolution for some other request must not dismiss the
+      // one the user is currently reading, or the thing they approve is not the thing they saw.
+      return state.pendingApproval?.request_id === message.payload.request_id
+        ? { ...state, pendingApproval: null }
+        : state;
+
+    case "trust.status":
+      return { ...state, trustEnabled: message.payload.enabled };
   }
 }
 

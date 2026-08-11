@@ -75,6 +75,8 @@ def test_rejected_example_is_refused_for_its_stated_reason(path: Path) -> None:
         "ipc.unknown-field.json": "exec",
         "ipc.per-core-out-of-range.json": "per_core_percent",
         "ws.unsupported-version.json": "v",
+        "ws.approval-unknown-decision.json": "decision",
+        "ws.approval-nested-args.json": "resolved_args",
     }
     offending_field = expectations.get(path.name)
     if offending_field is None:
