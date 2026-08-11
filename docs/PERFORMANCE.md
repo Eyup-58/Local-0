@@ -1,7 +1,7 @@
 # Local Zero — Performance
 
-**Status:** M0. **Every budget on this page is PROVISIONAL.** They are starting hypotheses, not
-measurements, and they are labelled as such until M1 replaces them with real numbers.
+**Status:** M1. The budgets below have been **measured** and revised against the floor. §5 carries
+the numbers, the scripts that produced them, and — as importantly — what they do not cover.
 
 ---
 
@@ -23,21 +23,33 @@ casual about its own.
 
 ---
 
-## 1. Provisional budgets
+## 1. Budgets
 
-Starting hypotheses. **Not yet measured. Replace in M1.**
+Revised 2026-08-11 against the measurements in §5. Each is now a regression guard rather than a
+guess: set with enough headroom for ordinary variation, and tight enough that a real regression
+trips it. The original M0 hypothesis is kept alongside so the revision is visible.
 
-| # | Metric | Provisional budget | Produced by | Status |
-|---|---|---|---|---|
-| P1 | system sidecar idle RSS | < 80 MB | `bench/idle_rss.py` | not measured |
-| P2 | brain idle RSS | < 150 MB | `bench/idle_rss.py` | not measured |
-| P3 | Telemetry poll duration, p95 | < 50 ms | `bench/poll_latency.py` | not measured |
-| P4 | WS message latency, p95 | < 20 ms | `bench/ws_latency.py` | not measured |
-| P5 | Total idle CPU, all three processes | *to be set from the measured floor* | `bench/idle_cpu.py` | not measured |
+| # | Metric | Budget | M0 hypothesis | Measured | Produced by |
+|---|---|---|---|---|---|
+| P1 | system sidecar idle RSS | < 80 MiB | < 80 MB | 59.3 MiB max | `bench/idle_rss.py` |
+| P2 | brain idle RSS | **< 80 MiB** | < 150 MB | 51.4 MiB max | `bench/idle_rss.py` |
+| P3 | Telemetry poll duration, p95 | **< 10 ms** | < 50 ms | 2.00 ms | `bench/poll_latency.py` |
+| P4 | Latency to a local consumer, p95 | < 20 ms | < 20 ms | 4.10 ms | `bench/ws_latency.py` |
+| P5 | Total idle CPU, all three processes | **< 1.0 % of one logical processor** | *unset by design* | 0.302 % | `bench/idle_cpu.py` |
 
-P5 has no number on purpose. Setting a CPU budget before measuring the floor produces either a
-figure that is trivially met or one that is unreachable for reasons the design cannot influence.
-M1 measures first, then sets it.
+What changed and why:
+
+- **P2 tightened from 150 to 80 MiB.** The hypothesis was three times the measured floor, which
+  would have let the brain triple in size without anyone noticing. FastAPI, Pydantic and a reader
+  thread cost 51 MiB; 80 leaves room for the guard chain M2 adds.
+- **P3 tightened from 50 to 10 ms.** A budget 25× the measured p95 cannot fail for any reason worth
+  hearing about. 10 ms still leaves five times the current cost.
+- **P4 left at 20 ms**, deliberately, even though the measured segment is 4.10 ms. The budget is
+  written against the *whole* path to the UI and only part of that path has been measured — see §5.
+  Tightening it against a partial measurement would be pretending the rest is free.
+- **P5 set to 1.0 % of one logical processor**, roughly three times the measured floor. Note the
+  unit: one logical processor, not the machine. On this 28-thread CPU the measured 0.302 % is about
+  0.011 % of total capacity.
 
 ### Why p95 and not average
 
@@ -131,9 +143,62 @@ only.
 
 ## 5. Results
 
-Empty. M1 fills this in with real output, quoted verbatim from the bench scripts, each with its
-date.
+Measured 2026-08-11 on the target machine, i7-14700KF / RX 7800 XT / 64 GB, with all three layers
+running and the UI open in a browser. Raw output for each run is in `bench/results/`.
 
 | Date | Metric | Value | Script | Verdict |
 |---|---|---|---|---|
-| — | — | — | — | *no measurements taken yet* |
+| 2026-08-11 | P1 system idle RSS | median 58.8 MiB, **max 59.3 MiB** | `bench/idle_rss.py` | **PASS** (budget < 80 MiB) |
+| 2026-08-11 | P2 brain idle RSS | median 51.4 MiB, **max 51.4 MiB** | `bench/idle_rss.py` | **PASS** (budget < 150 MiB) |
+| 2026-08-11 | P3 sweep duration | p50 1.34 ms, **p95 2.00 ms**, p99 2.32 ms, max 3.44 ms | `bench/poll_latency.py` | **PASS** (budget < 50 ms) |
+| 2026-08-11 | P4 latency, sidecar → local consumer | p50 2.76 ms, **p95 4.10 ms**, p99 4.63 ms, max 5.05 ms | `bench/ws_latency.py` | **PASS for the measured segment** (budget < 20 ms) |
+| 2026-08-11 | P5 total idle CPU | **0.302 % of one logical processor** | `bench/idle_cpu.py` | budget set from this floor |
+
+Verbatim:
+
+```
+P3 sweep duration: n=600  p50=1.34ms  p95=2.00ms  p99=2.32ms  max=3.44ms
+  note: discarded the first 5 sweeps as PDH warm-up: 12.25ms, 8.05ms, 1.92ms, 1.48ms, 1.70ms
+
+brain:  median 51.4 MiB, max 51.4 MiB (n=300)
+system: median 58.8 MiB, max 59.3 MiB (n=300)
+ui:     median 72.0 MiB, max 72.2 MiB (n=300)
+  note: system memory load 22% -> 22%, swing 0 points
+
+brain:  0.39s CPU over 300.0s wall = 0.130% of one core
+system: 0.50s CPU over 300.0s wall = 0.167% of one core
+ui:     0.02s CPU over 300.0s wall = 0.005% of one core
+P5 total idle CPU: 0.302% of one logical processor
+
+P4 latency (excluding the browser): n=600  p50=2.76ms  p95=4.10ms  p99=4.63ms  max=5.05ms
+```
+
+### What these numbers do not cover
+
+Recorded because a measurement quoted beyond its conditions is worse than no measurement.
+
+**P3 measured the idle case only.** §3 requires the P3 window to include a period with a real GPU
+workload, because `GPU Engine(*)` instance enumeration is not free and its cost scales with how
+many instances exist. This run was taken on an idle machine. **The loaded case is not measured**,
+and the 2.00 ms p95 must not be assumed to hold with a game running.
+
+**P4 excludes the browser.** The number is sidecar sweep completion through the pipe, the brain and
+the WebSocket to a local Python client sharing the system clock — so no cross-origin offset was
+needed and none was faked. Whatever the browser adds on top is **not measured**. The full
+`sampled_at` → rendered-frame path stays unmeasured until something instruments the UI itself.
+
+**U2 is still not measured.** The idle cost of a visible browser tab compositing regardless of what
+the page draws was inherited from Project 0 and remains unquantified. The 72.0 MiB and 0.005 % above
+are the vite preview server, **not** the browser tab rendering the panel.
+
+### A wrong number caught before it was written down
+
+The first P5 run reported the brain at 5.4 MiB using **0.000 s** of CPU over five minutes. A process
+validating and broadcasting a sample every second cannot do that. The cause was process selection:
+`uv run uvicorn …` produces a `uv.exe` parent whose command line matches the child's just as well,
+and the harness had picked the idle wrapper.
+
+Both scripts were fixed to select the interpreter, and `bench/idle_cpu.py` now refuses to report a
+working layer at zero CPU without flagging the run as suspect. The numbers above are from the rerun.
+This is recorded rather than quietly corrected, because a benchmark that can silently measure the
+wrong process once can do it again.
