@@ -181,10 +181,14 @@ class Guard:
                 return Denied("path_containment", "denied_guard", f"{name}: not a path-shaped value")
 
             outcome = resolve_within(raw, capability.allowed_roots)
-            if isinstance(outcome, Refused):
-                return Denied("path_containment", "denied_guard", f"{name}: {outcome.reason}")
+            # Positive check rather than `if isinstance(outcome, Refused): ...` followed by an
+            # assert. `python -O` strips asserts, so an assert on a guard path is one refactor away
+            # from being the thing that was holding the door shut. Anything that is not positively
+            # Contained is a denial.
+            if not isinstance(outcome, Contained):
+                reason = outcome.reason if isinstance(outcome, Refused) else "containment returned no verdict"
+                return Denied("path_containment", "denied_guard", f"{name}: {reason}")
 
-            assert isinstance(outcome, Contained)
             canonical[name] = str(outcome.path)
             affected.append(outcome.path)
 
