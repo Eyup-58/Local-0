@@ -55,24 +55,43 @@ broadcast, UI client with a live view, bench scripts for idle RSS and poll laten
 **Out of scope — do not write in this milestone:** LLM integration, capability registry, the guard,
 the approval flow, game scanning, OS operations.
 
-Exit criteria:
+Exit criteria, with the evidence for each. Verified 2026-08-11.
 
-- [ ] All three processes start and the UI shows live data at 1 Hz
-- [ ] **Every process runs `asInvoker`; no UAC prompt appears at any point** (replaces the elevated
-      helper that earlier drafts assumed — see `ARCHITECTURE.md` §2)
-- [ ] **CPU counters read correctly under this machine's Turkish locale**, via
+- [x] All three processes start and the UI shows live data at 1 Hz — run together against live
+      hardware; the panel reported `Live`, seq advancing, 28 core cells, 0 frames refused
+- [x] **Every process runs `asInvoker`; no UAC prompt appears at any point** — `app.manifest`
+      requests `asInvoker`, `ElevationGuard` refuses to start elevated at runtime, and
+      `PrivilegeTests` asserts both the declaration and that the suite itself is unelevated
+- [x] **CPU counters read correctly under this machine's Turkish locale**, via
       `PdhAddEnglishCounterW`, with a test that fails if a localized counter path is introduced —
-      this is invariant L1's gate, and skipping it means CPU telemetry silently returns nothing
-- [ ] `System.Diagnostics.PerformanceCounter` appears nowhere in `system/` (grep is evidence)
-- [ ] Named pipe ACL grants the current user's SID only, verified by a test, not by inspection
-- [ ] Schema-invalid messages are dropped and counted, with a test on each boundary
-- [ ] Unavailable sensors arrive as null with a populated `unavailable_reason`, and the UI renders a
-      labelled gap rather than a zero
-- [ ] Killing any one layer leaves the other two in a visible error state — no hang, no freeze, and
-      **no stale sample presented as live** (`system.status` drives this)
-- [ ] `/bench` runs and produces real numbers; `docs/PERFORMANCE.md` §5 is filled in with them and
-      the provisional budgets are revised against measurement
-- [ ] `/threat-check` reports no CRITICAL or HIGH findings
+      `BuildInvariantTests`. Proven to fail: a deliberate violation was introduced and the gate
+      caught it before being removed. Measured directly: the English API returned 15.59 where the
+      localized API returned `0xC0000BB8` for the identical path
+- [x] `System.Diagnostics.PerformanceCounter` appears nowhere in `system/` — 0 occurrences in code.
+      The only two matches in the tree are inside doc comments explaining the ban, which the gate
+      excludes by skipping comment lines
+- [x] Named pipe ACL grants the current user's SID only, verified by a test, not by inspection —
+      `PipeSecurityTests` asserts exactly one access rule matching the current SID, and separately
+      that neither Administrators nor SYSTEM appear
+- [x] Schema-invalid messages are dropped and counted, with a test on each boundary —
+      `InboundMessageParserTests` (system), `test_session.py` (brain), `guards.test.ts` (ui).
+      Exercised live too: an unknown field and `v: 99` were both refused over a real pipe while the
+      connection stayed up
+- [x] Unavailable sensors arrive as null with a populated `unavailable_reason`, and the UI renders a
+      labelled gap rather than a zero — `rendering.test.tsx` asserts the reason is shown and that no
+      zero appears; confirmed on screen for `cpu.temperature_c` and `gpu.temperature_c`
+- [x] Killing any one layer leaves the other two in a visible error state — no hang, no freeze, and
+      **no stale sample presented as live** — the sidecar was killed under a live browser session:
+      the last reading stayed on screen, the verdict flipped to `Not live`, and the sidecar's own
+      prose explained why. Socket loss is covered by `reducer.test.ts`
+- [x] `/bench` runs and produces real numbers; `docs/PERFORMANCE.md` §5 is filled in with them and
+      the provisional budgets are revised against measurement — all five budgets measured, P2, P3
+      and P5 revised. §5 also records what the numbers do **not** cover
+- [ ] `/threat-check` reports no CRITICAL or HIGH findings — **NOT RUN.** This is a user-triggered
+      slash command; the agent cannot invoke it. It is the one criterion still outstanding
+
+**Contract amendment during M1.** `per_core_percent` entries were widened to `number | null` so a
+parked core can hold its slot. Taken by explicit human decision and recorded in `CONTRACTS.md` §5.
 
 ---
 

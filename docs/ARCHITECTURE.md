@@ -247,17 +247,17 @@ human-readable wire format means a failing message can be read directly out of a
 debugging. At 1 Hz with a payload this small, encoding cost is not a consideration. If it ever
 becomes one, that is a measured bottleneck and §6 applies.
 
-**OPEN QUESTION — the Python end of the pipe.** Python's standard library has no Windows named pipe
-support. The realistic options:
+**DECIDED in M1 — the Python end of the pipe is `pywin32`.** Python's standard library has no
+Windows named pipe support, and the alternative was `127.0.0.1` TCP with a shared secret, which
+would have discarded the ACL argument above. The brain runs one dedicated reader thread feeding an
+`asyncio.Queue` via `call_soon_threadsafe`. Full reasoning and evidence in `CONTRACTS.md` §8.
 
-1. **`pywin32`** (`win32file` / `win32pipe`). Reliable and well-trodden, but the handles are not
-   asyncio-aware, so the brain needs a dedicated reader thread feeding an
-   `asyncio.Queue` via `call_soon_threadsafe`. One extra moving part, well-understood shape.
-2. **`127.0.0.1` TCP**, abandoning the ACL argument above and replacing it with a shared secret.
-   Simpler code, materially weaker boundary.
-
-Option 1 is the presumptive choice because it preserves the security property that motivated the
-named pipe at all. The decision is made in M1 against real code, not here.
+**Verified on this machine, 2026-08-11:** the pipe must be opened with `FILE_FLAG_OVERLAPPED`. A
+synchronous `ReadFile` blocks until data arrives and cannot be cancelled by closing the handle from
+another thread, which makes the reader thread unstoppable — the test suite hung on shutdown until
+the read was changed to wait on its completion event alongside a stop event. Polling with
+`PeekNamedPipe` was rejected as the fix because it spends idle CPU forever to solve a problem an
+event wait solves for free (§5 of `PERFORMANCE.md`).
 
 ### brain ↔ ui: WebSocket
 
@@ -292,7 +292,7 @@ polish item.
 | system dies while brain is up | Brain emits `system.status {connected:false, reason}`, keeps serving the UI, retries the pipe with backoff. The UI shows a disconnected state and **stops presenting the last sample as live**. |
 | brain dies while system is up | Sidecar's pipe write fails; it returns to waiting for a connection. It does not exit, does not spin, does not buffer samples unboundedly — the buffer is bounded and drops oldest. |
 | brain dies while ui is up | The socket closes. The UI shows disconnected and reconnects with backoff. It never renders stale numbers without a staleness marker. |
-| ui closes | Brain drops the socket and continues. Telemetry keeps flowing to no one, or the poll drops — a decision for M1 against the measured idle cost. |
+| ui closes | Brain drops the socket and continues; the sidecar keeps sweeping, because the brain's pipe is still open. **Decided in M1:** the sidecar sweeps only while a consumer is attached to its pipe — the tick loop lives per connection, so with nothing connected it costs nothing at all. The brain deliberately does *not* drop the pipe when the last UI tab closes: reconnecting costs a fresh handshake and a PDH warm-up tick, and the measured idle cost of leaving it open is small enough not to buy that back. See §5 of `PERFORMANCE.md` for the number. |
 | A message fails schema validation | Dropped, counted, and logged with the offending field. It is never partially applied. The connection is not torn down for a single bad message; repeated violations close it. |
 | A sensor read throws | That field becomes null for that sample and an `error` message is emitted once per transition, not once per tick. Other fields in the sample are unaffected. |
 
@@ -331,7 +331,8 @@ E:\Local Zero\
 
 Carried into M1 rather than guessed at now:
 
-- **Python ↔ named pipe transport** — §4. Decided in M1 against working code.
+- ~~**Python ↔ named pipe transport**~~ — **closed in M1.** `pywin32` with a reader thread and
+  overlapped reads. See §4 and `CONTRACTS.md` §8.
 - **The UI's shell** — §4. Decided before M3.
 - **LLM provider set** — which of the intended providers are local (Ollama, already on this machine)
   and which are network calls. This determines whether Local Zero makes outbound connections at all,

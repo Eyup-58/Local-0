@@ -75,8 +75,12 @@ recorded as "not measured" with the reason.
 dotnet build
 dotnet test
 
-# brain/
+# brain/  (Python 3.13 via uv; the 3.11 on PATH belongs to an unrelated venv)
 uv run pytest brain/tests -q
+uv run uvicorn --app-dir brain local_zero_brain.ws.server:app --host 127.0.0.1 --port 8765
+
+# system/  (run the sidecar; it must be started unelevated, and refuses otherwise)
+dotnet run --project system/LocalZero.System
 
 # ui/
 npm run build
