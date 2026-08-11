@@ -49,6 +49,7 @@ class BrainServices:
     messages: WsMessageFactory
     guard: Guard
     trust: TrustStore
+    log: Any = print
     #: Guard verdicts waiting on a human, by request_id.
     #:
     #: Held here rather than in the queue because executing an approved invocation needs the
@@ -126,6 +127,7 @@ def create_app(
         link=None,  # type: ignore[arg-type]
         guard=guard,
         trust=trust,
+        log=log,
     )
 
     @contextlib.asynccontextmanager
@@ -292,7 +294,7 @@ async def _apply_decision(services: BrainServices, message: ApprovalDecision) ->
         return
 
     if approved:
-        _execute(services, pending)
+        await _execute(services, pending)
     else:
         # So the identical invocation is not offered again this session.
         services.guard.record_rejection(pending)
@@ -306,14 +308,34 @@ async def _apply_decision(services: BrainServices, message: ApprovalDecision) ->
     )
 
 
-def _execute(services: BrainServices, pending: Pending) -> None:
+async def _execute(services: BrainServices, pending: Pending) -> None:
     """Runs an approved invocation, recording it before it runs.
 
     Audited first so a crash mid-operation still leaves a record - docs/SECURITY.md section 9. A
-    handler that raises is recorded as having been allowed, because it was.
+    handler that raises is still recorded as having been allowed, because it was; what changes is
+    that the user is told it did not work.
+
+    Run on a worker thread. Handlers do synchronous file I/O, and doing that on the event loop would
+    stall every socket the brain holds - including the telemetry the user is watching - for as long
+    as the write takes.
     """
     services.guard.audit_decision(pending, decision="allowed", reason="approved by the user")
-    pending.capability.handler(**pending.resolved_args)
+
+    try:
+        await asyncio.to_thread(pending.capability.handler, **pending.resolved_args)
+    except Exception as error:  # noqa: BLE001 - a handler may raise anything; none of it may escape
+        # An operation the user approved and which then failed is exactly the case this product must
+        # not be silent about. Letting it propagate would tear down the socket and the UI would
+        # reconnect showing nothing wrong, which is the failure mode the whole panel is built to
+        # avoid. The class name, not the message: an exception's text can carry a path.
+        services.log(f"capability {pending.capability.name} failed: {type(error).__name__}")
+        await services.hub.broadcast(
+            services.messages.error(
+                code="internal_error",
+                message=f"{pending.capability.name} was approved but did not complete. "
+                f"It failed with {type(error).__name__}. Nothing further was attempted.",
+            )
+        )
 
 
 async def _apply_trust(services: BrainServices, message: TrustSet) -> None:

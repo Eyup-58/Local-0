@@ -13,9 +13,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import ipc_hello
+from local_zero_brain.audit import AuditLog
+from local_zero_brain.capabilities.guard import Guard, Invocation, Pending
+from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.contracts.ws import WS_MESSAGE_ADAPTER
 from local_zero_brain.ipc.pipe_client import PipeConnected, PipeLine
-from local_zero_brain.ws.server import BIND_HOST, create_app
+from local_zero_brain.metrics import DropCounters
+from local_zero_brain.trust import TrustStore
+from local_zero_brain.ws.messages import WsMessageFactory
+from local_zero_brain.ws.server import BIND_HOST, BrainServices, _execute, create_app
 
 CLIENT_HELLO = {
     "v": 1,
@@ -107,6 +113,51 @@ def handshake(socket) -> None:
     socket.send_text(json.dumps(CLIENT_HELLO))
     assert socket.receive_json()["type"] == "server.hello"
     assert socket.receive_json()["type"] == "trust.status"
+
+
+async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -> None:
+    """An operation the user approved and which then failed is exactly what this product must not be
+    silent about.
+
+    Before this was guarded, a handler raising propagated into the socket handler: the connection
+    died, the UI reconnected showing nothing wrong, and the audit said the operation was allowed.
+    That is the failure mode the whole panel exists to avoid.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    guard = Guard(
+        registry=build_registry(workspace),
+        workspace=workspace,
+        audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
+    )
+
+    # Passes every guard step and then fails in the handler: the file is not there to delete.
+    verdict = guard.evaluate(Invocation("delete_file", {"path": str(workspace / "never-existed.txt")}))
+    assert isinstance(verdict, Pending)
+
+    sent: list[dict] = []
+
+    class RecordingHub:
+        async def broadcast(self, message: dict) -> None:
+            sent.append(message)
+
+    services = BrainServices(
+        counters=DropCounters(),
+        hub=RecordingHub(),  # type: ignore[arg-type]
+        link=None,  # type: ignore[arg-type]
+        messages=WsMessageFactory(),
+        guard=guard,
+        trust=TrustStore(tmp_path / "trust.json"),
+        log=lambda _: None,
+    )
+
+    # Must not raise: the failure is reported, not propagated.
+    await _execute(services, verdict)
+
+    assert [frame["type"] for frame in sent] == ["error"]
+    assert "did not complete" in sent[0]["payload"]["message"]
+    # The class name reaches the user; the exception's text does not, because it can carry a path.
+    assert str(workspace) not in sent[0]["payload"]["message"]
 
 
 def test_trust_state_is_reported_immediately_after_the_handshake(client: TestClient) -> None:
