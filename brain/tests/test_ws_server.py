@@ -7,6 +7,7 @@ are about what the socket does, and the link is fed directly where a system laye
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,8 +27,23 @@ CLIENT_HELLO = {
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(create_app(start_pipe_client=False, log=lambda _: None))
+def client(tmp_path: Path) -> TestClient:
+    """An app whose workspace, trust file and audit log are all temporary.
+
+    Without the three paths, create_app falls back to the real %LOCALAPPDATA%\\LocalZero and a
+    relative logs/ directory - so the suite would read the user's actual trust state, meaning these
+    tests would start failing the day somebody turned the button on, and would scatter audit lines
+    into whatever directory pytest happened to run from.
+    """
+    return TestClient(
+        create_app(
+            start_pipe_client=False,
+            log=lambda _: None,
+            workspace=tmp_path / "workspace",
+            trust_path=tmp_path / "trust.json",
+            audit_path=tmp_path / "logs" / "audit.jsonl",
+        )
+    )
 
 
 def test_the_brain_binds_to_loopback_only() -> None:
@@ -82,12 +98,34 @@ def test_a_hello_with_an_unimplemented_version_is_refused_as_such(client: TestCl
     assert reply["payload"]["code"] == "unsupported_version"
 
 
-def test_a_frame_the_ui_may_not_send_is_refused_and_counted(client: TestClient) -> None:
-    """The UI holds no authority. It cannot construct anything the brain has not already resolved,
-    and in M1 it has nothing at all to send after its hello."""
+def handshake(socket) -> None:
+    """Completes the opening exchange: client.hello, then server.hello and trust.status.
+
+    Trust state arrives immediately after the hello because a tab that does not yet know approval is
+    off would show the safe state while the permissive one is in force.
+    """
+    socket.send_text(json.dumps(CLIENT_HELLO))
+    assert socket.receive_json()["type"] == "server.hello"
+    assert socket.receive_json()["type"] == "trust.status"
+
+
+def test_trust_state_is_reported_immediately_after_the_handshake(client: TestClient) -> None:
     with client, client.websocket_connect("/ws") as socket:
         socket.send_text(json.dumps(CLIENT_HELLO))
-        socket.receive_json()
+        assert socket.receive_json()["type"] == "server.hello"
+
+        trust = socket.receive_json()
+
+    assert trust["type"] == "trust.status"
+    # Off unless the user turned it on. A fresh install has approval in force.
+    assert trust["payload"]["enabled"] is False
+
+
+def test_a_frame_the_ui_may_not_send_is_refused_and_counted(client: TestClient) -> None:
+    """The UI's authority is bounded: it may answer a request the brain raised and set its own trust
+    switch, and nothing else. A server.hello arriving inbound is not a message it may send."""
+    with client, client.websocket_connect("/ws") as socket:
+        handshake(socket)
 
         socket.send_text(json.dumps({**CLIENT_HELLO, "type": "server.hello"}))
         reply = socket.receive_json()
@@ -120,8 +158,7 @@ def test_nothing_is_streamed_before_the_client_hello(client: TestClient) -> None
 
 def test_a_registered_client_receives_broadcast_frames(client: TestClient) -> None:
     with client, client.websocket_connect("/ws") as socket:
-        socket.send_text(json.dumps(CLIENT_HELLO))
-        assert socket.receive_json()["type"] == "server.hello"
+        handshake(socket)
 
         services = client.app.state.services
         services.link._queue.put_nowait(PipeConnected())

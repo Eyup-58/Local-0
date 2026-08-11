@@ -127,6 +127,25 @@ class Guard:
     def queue(self) -> ApprovalQueue:
         return self._queue
 
+    def audit_decision(self, pending: Pending, *, decision: Decision, reason: str) -> None:
+        """Records how a queued request was finally settled.
+
+        The queued entry was written when the request was raised; this is the second half of it. For
+        an approved invocation it is written *before* the handler runs, so a crash mid-operation
+        still leaves a record - docs/SECURITY.md section 9.
+        """
+        self._audit.record(
+            AuditRecord(
+                origin=pending.origin,
+                capability=pending.capability.name,
+                resolved_args=pending.resolved_args,
+                affected_paths=[str(path) for path in pending.affected_paths],
+                side_effect=pending.side_effect,
+                decision=decision,
+                reason=reason,
+            )
+        )
+
     def record_rejection(self, pending: Pending) -> None:
         """Remembers that the user said no, so the identical invocation is not queued again.
 

@@ -89,6 +89,40 @@ class WsMessageFactory:
         """
         return self._envelope("telemetry.sample", payload)
 
+    def approval_request(
+        self,
+        *,
+        request_id: str,
+        capability: str,
+        resolved_args: dict[str, Any],
+        affected_paths: list[str],
+        side_effect: str,
+        origin: str,
+    ) -> dict[str, Any]:
+        """The payload the user decides on.
+
+        Everything here comes from the invocation *after* it passed the guard's first three steps -
+        the resolved arguments and the computed paths, not a description of intent. The brain builds
+        it; nothing else contributes a field. docs/SECURITY.md section 5.
+        """
+        return self._envelope(
+            "approval.request",
+            {
+                "request_id": request_id,
+                "capability": capability,
+                "resolved_args": resolved_args,
+                "affected_paths": affected_paths,
+                "side_effect": side_effect,
+                "origin": origin,
+            },
+        )
+
+    def approval_resolved(self, *, request_id: str, outcome: str) -> dict[str, Any]:
+        return self._envelope("approval.resolved", {"request_id": request_id, "outcome": outcome})
+
+    def trust_status(self, *, enabled: bool, since: str) -> dict[str, Any]:
+        return self._envelope("trust.status", {"enabled": enabled, "since": since})
+
     def error(self, *, code: WsErrorCode, message: str, in_reply_to: str | None = None) -> dict[str, Any]:
         return self._envelope(
             "error",
