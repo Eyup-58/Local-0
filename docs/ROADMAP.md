@@ -113,20 +113,47 @@ The guard is built and tested against hardcoded invocations. **Deliberately befo
 — if the guard is proven correct while nothing can talk to it, then when M4 adds a model, any
 failure is isolated to the model layer rather than ambiguous.
 
-Exit criteria:
+Exit criteria, verified 2026-08-12. `brain` suite: **151 passed, 0 skipped**, and still 151 under
+`PYTHONOPTIMIZE=1`. `contracts/validate_examples.py` remains 14/14, which is the evidence that M2
+touched no contract — the guard is entirely brain-internal and adds no wire message.
 
-- [ ] Three example capabilities work, one per `side_effect`: `read`, `write`, `destructive`
-- [ ] The guard chain runs in the documented order, and each step has a test proving it denies what
-      it is supposed to deny
-- [ ] Path escape attempts are refused, with a test each: `..` traversal, absolute path outside
-      `allowed_roots`, symlink crossing the boundary, junction crossing the boundary
-- [ ] Containment is checked on the **canonicalised** path, with a test proving
-      `<allowed_root>\..\Windows` is refused (prefix-matching the raw string would accept it)
-- [ ] `destructive` cannot execute without approval — test
-- [ ] Arguments are validated even when the capability name is whitelisted — test
-- [ ] `logs/audit.jsonl` records every decision including denials, with `args_hash` rather than raw
-      args
-- [ ] `/threat-check` reports no CRITICAL or HIGH findings
+- [x] Three example capabilities work, one per `side_effect`: `read`, `write`, `destructive` —
+      `read_text_file`, `write_text_file`, `delete_file`. A verdict of "allowed" is not the same as
+      working, so each is tested by running its handler from the verdict: the read returns the
+      contents, the write creates the file with them, the destructive one removes it
+- [x] The guard chain runs in the documented order, and each step has a test proving it denies what
+      it is supposed to deny — `test_guard.py`, one section per step, plus
+      `test_the_chain_stops_at_the_first_failing_step`. **Step 5 needed a permissive approver stub to
+      be reachable at all**: with M2's always-denying approver the origin check could never execute,
+      and would have sat untested until M3 made approval succeed
+- [x] Path escape attempts are refused, with a test each: `..` traversal, absolute path outside
+      `allowed_roots`, symlink crossing the boundary, junction crossing the boundary — all four in
+      `test_paths.py`, each a real filesystem construction rather than a representative string. The
+      symlink cases need Developer Mode, enabled here 2026-08-12; they skip loudly rather than
+      silently passing when it is off, and a junction is never substituted for a symlink
+- [x] Containment is checked on the **canonicalised** path, with a test proving
+      `<allowed_root>\..\Windows` is refused — and the suite was **mutation-tested** rather than
+      merely run. Replacing component containment with a naive string prefix is caught only by the
+      sibling-prefix case; removing resolution entirely is caught only by the junction, `..` and
+      `<root>\..\Windows` cases. Neither mutation survives, and the two are killed by disjoint sets
+      of tests, so none of those four cases is redundant
+- [x] `destructive` cannot execute without approval —
+      `test_a_destructive_capability_cannot_execute_without_approval` asserts the file is still there
+      afterwards. In M2 this holds in the strongest available sense: approving is not yet an action
+      anything can take
+- [x] Arguments are validated even when the capability name is whitelisted — three tests: an unknown
+      field, a wrong type, a missing argument. This is the step the name proves nothing about
+- [x] `logs/audit.jsonl` records every decision including denials, with `args_hash` rather than raw
+      args — `test_audit.py` asserts a sensitive path never reaches the file and that key ordering
+      does not change the hash. Confirmed against the real log end to end
+- [x] `/threat-check` reports no CRITICAL or HIGH findings — run 2026-08-12 against the M2 diff. Two
+      LOW findings: an `assert` on a guard code path (removed; `python -O` strips asserts) and the
+      check-to-use window, accepted with the reasoning recorded in `SECURITY.md` §4 and re-examined
+      in M5
+
+**Deferred to M3 by scope, not overlooked:** "a rejected operation is not retried in the same
+session" (`SECURITY.md` §5) has no meaning until a rejection can happen, and rejecting is what the
+M3 approval flow builds.
 
 ---
 

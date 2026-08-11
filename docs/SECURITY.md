@@ -205,6 +205,23 @@ deny; the link is not followed.
 > Prefix-matching the *unresolved* string is the classic bug. `C:\Allowed\..\Windows` starts with
 > `C:\Allowed`. Canonicalise first, compare second.
 
+**Known residual risk: the check-to-use window.** Containment is proven against the filesystem as it
+is at the moment of the check, and the handler then re-traverses it to open the file. A local process
+running as this user could replace a directory component with a junction in between, and the handler
+would follow it.
+
+This is accepted rather than closed, for reasons that are worth being explicit about so the decision
+is not silently inherited. The attacker in §1 is *anyone who controls text this system will ingest* —
+not a process already executing on this machine as this user. Such a process does not need to race
+the guard; it can do directly whatever Local Zero could do for it. §10 rules multi-user out of scope
+for the same reason. Closing the window properly means holding an open handle from check to use
+(`O_NOFOLLOW`-style semantics, or Windows handle-based reopen), which is a real change to every
+handler signature and buys nothing against the attacker this design is built for.
+
+**This is re-examined in M5**, where capabilities stop being three example file operations. A
+capability that hands a path to another program, rather than opening it itself, cannot be protected
+by a handle the brain holds — and that is a different problem from this one.
+
 **(4) Approval routing.** If `side_effect != read`, the invocation goes to the approval queue (§5)
 and does not execute. If `side_effect == read`, it may execute directly.
 
