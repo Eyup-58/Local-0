@@ -157,7 +157,7 @@ sources becomes a capability name, an argument, a path, or a command line.
 | OS sensor readings | Trusted-structural | Displayed telemetry | Command generation. Sensor values are numbers; they are never interpolated into a command string. |
 | Local config file | Trusted, validated | Poll interval, thresholds, window state | Anything executable. Schema-validated on load; out-of-range values clamped; unknown keys rejected. |
 | Invocation / audit log | Trusted | Planner context, negative examples | — |
-| Messages from the ui layer | **Semi-trusted** | Approve/reject decisions on an invocation the backend already resolved | Constructing an invocation. The UI cannot originate a capability call. |
+| Messages from the ui layer | **Semi-trusted** | Approve/reject decisions on an invocation the backend already resolved, **and switching the approval gate itself off** (§5, added M3) | Constructing an invocation. The UI cannot originate a capability call. |
 | Messages from the system layer | **Semi-trusted** | Telemetry display, capability results | Anything unvalidated. Every message is schema-checked; unvalidated fields are not read. |
 | File contents read from disk | **Untrusted** | Reader output shown to the user | Planner context, capability selection, argument construction |
 | Fetched web pages, repos, transcripts | **Untrusted** | Reader output shown to the user | Planner context, capability selection, argument construction |
@@ -217,6 +217,18 @@ the guard; it can do directly whatever Local Zero could do for it. §10 rules mu
 for the same reason. Closing the window properly means holding an open handle from check to use
 (`O_NOFOLLOW`-style semantics, or Windows handle-based reopen), which is a real change to every
 handler signature and buys nothing against the attacker this design is built for.
+
+**M3 widened this window and the widening is material.** When the guard decided and executed in one
+breath, the race was microseconds. Now an invocation needing approval is checked, shown to a human,
+and executed only once they answer — so the window is however long the person takes to read the
+dialog. Seconds, or minutes if they walk away.
+
+The attacker model has not changed: this is still only reachable by a process already running as
+this user, which does not need to win a race against anything. But "a narrow race" was part of why
+the risk was acceptable, and that part is no longer true, so it is written down rather than left to
+be inferred from an older paragraph. Re-checking containment at execution time would narrow it again
+without closing it — the same race would simply move — which is why the answer remains handle-based
+execution rather than a second check.
 
 **This is re-examined in M5**, where capabilities stop being three example file operations. A
 capability that hands a path to another program, rather than opening it itself, cannot be protected
@@ -289,12 +301,47 @@ The dialog must show, always, without scrolling:
 ### Interaction rules
 
 - `origin == untrusted_content` → the dialog is **visually distinct**, and the default selection is
-  **Reject**. Enter is not bound to approve.
+  **Reject**. Enter is not bound to approve. *(In practice Reject holds focus for every request, not
+  only untrusted ones: a keystroke already in flight when a dialog appears should not land on
+  Approve regardless of where the request came from.)*
 - `side_effect == destructive` → the approve control stays disabled for 2 seconds, so a queued
-  keystroke or reflexive click cannot confirm it.
+  keystroke or reflexive click cannot confirm it. Reject is never delayed — making the safe answer
+  wait would be an argument for the dangerous one.
 - **A rejected invocation is not retried.** It is recorded as `denied`, returned to the model as
   denied, and the identical invocation is not re-attempted in the same session. No automatic retry,
   no rephrasing and resubmitting.
+
+### Trust mode — approval can be switched off
+
+**Added in M3, by explicit decision of the user, with the consequences below stated at the time.**
+This section exists because a security document that describes a stronger product than the one that
+ships is worse than no document: it is believed.
+
+A control in the UI turns the approval gate off. While it is on:
+
+- **every invocation is auto-approved, regardless of `side_effect` or `origin`.** There are no
+  exceptions. An operation that exists only because of content Local Zero *read* — a webpage, a file,
+  a model's suggestion derived from untrusted text — executes with no human in the loop.
+- **it persists across restarts.** It stays off until the user turns it back on.
+- **after M4 adds the LLM, `logs/audit.jsonl` is the only record that any of it happened.** Every
+  such operation is written there with `trust_mode: true`.
+
+What it does **not** do, because it structurally cannot:
+
+- Steps 1–3 of §4 — the name whitelist, the argument schema, path canonicalisation and containment —
+  are not the approval gate and run in every mode. Trust mode skips the gate, not the guard.
+- **It cannot be switched on by anything except the user.** The state lives in
+  `%LOCALAPPDATA%\LocalZero\trust.json`, a *sibling* of the workspace rather than a child, so it sits
+  outside every capability's `allowed_roots` and step 3 refuses to resolve a path to it. It is
+  additionally on the guard's protected-path list, which refuses it whatever a capability's roots
+  say — see §4. Containment protects the switch, not approval, which is precisely why the protection
+  survives the switch being off.
+
+The UI makes arming deliberate — it asks once and states the consequence — and disarming immediate.
+While it is on, the page carries a persistent banner rather than a badge.
+
+**This is the largest single reduction in this document's guarantees, and it is a deliberate choice
+by the person whose machine it is.** It is recorded here rather than argued with.
 
 ---
 
@@ -428,8 +475,17 @@ Every decision is recorded, including the denials — especially the denials:
 | `args_hash` | SHA-256 of the canonical resolved args. **Not the args themselves** — they can contain paths and content. |
 | `affected_paths` | The computed list |
 | `side_effect` | |
-| `decision` | `allowed` \| `denied_guard` \| `denied_user` \| `denied_origin` |
+| `decision` | `allowed` \| `queued` \| `denied_guard` \| `denied_user` \| `denied_origin` |
 | `reason` | Which guard step denied it, or that the user rejected it |
+| `trust_mode` | Whether the approval gate was bypassed because the user had switched it off (§5) |
+
+`queued` was added in M3, when a state came into existence that this list did not cover: an
+invocation that has passed the guard and is waiting on a human. It is written when the request is
+raised, and the outcome is written separately when it settles. Without it, a request raised and never
+answered would leave no trace, which is the kind of silence this log exists to prevent.
+
+`trust_mode` matters most once M4 exists. A record that did not distinguish *a human approved this*
+from *the button was on* would not be a record of what happened.
 
 The log is written before execution for allowed invocations, so a crash mid-operation still leaves
 a record.

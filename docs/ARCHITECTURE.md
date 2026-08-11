@@ -264,11 +264,17 @@ event wait solves for free (§5 of `PERFORMANCE.md`).
 The UI is a browser client; WebSocket is the native fit and needs no justification beyond that.
 The brain binds to `127.0.0.1` only.
 
-**OPEN QUESTION — the UI's shell.** Whether `ui/` is served to an ordinary browser tab or later
-wrapped in a desktop shell changes how "the UI has no authority" is enforced. A browser tab gets
-that property from the same-origin policy and a strict CSP; a Tauri or Electron shell gets it from
-capability grants and needs its own written justification. M1 targets a plain browser tab against
-`vite dev`. Revisit before M3, because the approval dialog is the piece most affected.
+**DECIDED in M3 — the UI stays an ordinary browser tab.** Whether `ui/` is served to a browser or
+wrapped in a desktop shell changes how "the UI has no authority" is enforced: a browser tab gets that
+property from the same-origin policy and a strict CSP, while a Tauri or Electron shell would get it
+from capability grants and would need its own written justification. Taken by explicit human
+decision.
+
+**The accepted cost, recorded because it is a real one.** The approval dialog is the piece most
+affected, and a browser tab is the worse host for it: an approval waiting in an unfocused tab is easy
+to miss, and the page cannot raise its own window because the browser owns it. Nothing in M3
+mitigates that. A desktop shell remains the answer if the miss rate turns out to matter, and M6 is
+where it would be revisited — on observed behaviour rather than a preference for a heavier stack.
 
 ### gRPC is deferred to M6, conditionally
 
@@ -333,7 +339,8 @@ Carried into M1 rather than guessed at now:
 
 - ~~**Python ↔ named pipe transport**~~ — **closed in M1.** `pywin32` with a reader thread and
   overlapped reads. See §4 and `CONTRACTS.md` §8.
-- **The UI's shell** — §4. Decided before M3.
+- ~~**The UI's shell**~~ — **closed in M3.** An ordinary browser tab, with the missed-approval cost
+  accepted and written into §4.
 - **LLM provider set** — which of the intended providers are local (Ollama, already on this machine)
   and which are network calls. This determines whether Local Zero makes outbound connections at all,
   which is a `SECURITY.md` question, not a convenience one. Must be answered before M4.
