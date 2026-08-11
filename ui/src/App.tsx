@@ -6,12 +6,14 @@
  * this layer never composes an explanation of its own for hardware it cannot see.
  */
 
+import { ApprovalDialog } from "./components/ApprovalDialog";
 import { Counters } from "./components/Counters";
 import { CoreGrid } from "./components/CoreGrid";
 import { DeclaredGaps } from "./components/DeclaredGaps";
 import { Gauge } from "./components/Gauge";
 import { LinkStatus } from "./components/LinkStatus";
 import { Metric } from "./components/Metric";
+import { TrustControl } from "./components/TrustControl";
 import { formatGibibytes, formatMegahertz, formatPercent, formatUptime, fraction } from "./format";
 import type { SensorCapability } from "./contracts/types";
 import { isStale } from "./ws/reducer";
@@ -30,7 +32,7 @@ function reasonFor(sensors: readonly SensorCapability[], field: string): string 
 }
 
 export function App() {
-  const { state, now } = useTelemetry();
+  const { state, now, decide, setTrust } = useTelemetry();
   const stale = isStale(state, now);
   const sample = state.sample;
   const sensors = state.sensors;
@@ -47,6 +49,15 @@ export function App() {
       </header>
 
       <LinkStatus state={state} now={now} stale={stale} />
+
+      <TrustControl enabled={state.trustEnabled} onChange={setTrust} />
+
+      {state.pendingApproval !== null && (
+        <ApprovalDialog
+          request={state.pendingApproval}
+          onDecision={(approve) => decide(state.pendingApproval!.request_id, approve)}
+        />
+      )}
 
       <div className="grid">
         <section className="panel">

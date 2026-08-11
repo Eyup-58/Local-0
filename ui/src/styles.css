@@ -480,3 +480,202 @@ body {
     font-size: 22px;
   }
 }
+
+/* ------------------------------------------------------- approval and trust
+
+ * The approval dialog and the trust banner share a job with the "not live" rail above them: both
+ * answer "is what you are looking at what you think it is?". So they use the same vocabulary -
+ * the alarm hue for the state that costs something, the hatch for a surface that is not ordinary
+ * readout, and mono for anything the user has to read literally rather than skim.
+ *
+ * Every value in the dialog is set in mono on purpose. A path is read character by character when
+ * deciding whether to delete it, and a proportional face invites skimming exactly there.
+ */
+
+.approval {
+  border: 1px solid var(--alarm);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.approval--untrusted {
+  background-image: var(--hatch);
+}
+
+.approval__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  margin-bottom: 12px;
+}
+
+.approval__badges {
+  display: flex;
+  gap: 8px;
+}
+
+.badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+}
+
+.badge--destructive,
+.badge--untrusted {
+  border-color: var(--alarm);
+  color: var(--alarm);
+}
+
+.approval__warning {
+  color: var(--alarm);
+  margin: 0 0 12px;
+}
+
+.approval__capability {
+  font-family: var(--mono);
+  font-size: 20px;
+  margin: 0 0 12px;
+  word-break: break-all;
+}
+
+.approval__args {
+  margin: 0 0 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.approval__arg {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.approval__arg dt {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Wrapped, never truncated. An ellipsis in an approval dialog hides the end of a path, and the end
+   of a path is where it stops being the one you expected. */
+.approval__arg dd {
+  margin: 0;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 12em;
+  overflow-y: auto;
+}
+
+.approval__paths ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.approval__none {
+  margin: 6px 0 0;
+  color: var(--ink-dim);
+}
+
+.approval__controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: var(--gap);
+}
+
+.button {
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: var(--panel-edge);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--cool);
+  outline-offset: 2px;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  background-image: var(--hatch);
+}
+
+.button--reject {
+  border-color: var(--cool);
+}
+
+.button--approve {
+  border-color: var(--alarm);
+}
+
+.trust-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  border: 1px solid var(--alarm);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  background-image: var(--hatch);
+  padding: 14px var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.trust-banner__title {
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--alarm);
+  margin: 0;
+}
+
+.trust-banner__note {
+  margin: 4px 0 0;
+  color: var(--ink-dim);
+  max-width: 70ch;
+}
+
+.trust-confirm {
+  border: 1px solid var(--alarm);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 14px var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.trust-confirm__note {
+  margin: 0;
+  max-width: 70ch;
+}
+
+.trust-confirm__controls {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.trust-control {
+  margin-bottom: var(--gap);
+}
