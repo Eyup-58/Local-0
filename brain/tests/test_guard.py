@@ -23,8 +23,10 @@ from local_zero_brain.capabilities.guard import (
     Denied,
     Guard,
     Invocation,
+    Pending,
 )
 from local_zero_brain.capabilities.handlers import build_registry
+from local_zero_brain.trust import TrustStore
 
 
 @pytest.fixture
@@ -48,24 +50,22 @@ def invoke(capability: str, origin: str = "user_direct", **args: object) -> Invo
     return Invocation(capability=capability, args=args, origin=origin)
 
 
-class AllowingApprover:
-    """Stands in for the M3 approval flow.
-
-    Used only where a test needs the chain to get past step 4, because M2's real approver denies
-    everything and would otherwise leave step 5 and the handlers unreachable.
-    """
-
-    def deny_reason(self, capability: object, affected_paths: tuple[Path, ...]) -> str | None:
-        return None
-
-
 @pytest.fixture
-def approved_guard(workspace: Path, tmp_path: Path) -> Guard:
+def trusting_guard(workspace: Path, tmp_path: Path) -> Guard:
+    """A guard with the trust button on.
+
+    This is the user's chosen configuration: approval bypassed for every invocation regardless of
+    side_effect or origin. Used here where a test needs the chain to get past step 4 - and, in the
+    trust-mode section below, as the thing under test.
+    """
+    store = TrustStore(tmp_path / "trust.json")
+    store.set(enabled=True)
+
     return Guard(
         registry=build_registry(workspace),
         workspace=workspace,
         audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
-        approver=AllowingApprover(),
+        trust=store,
     )
 
 
@@ -83,10 +83,10 @@ def test_the_read_capability_returns_the_file_contents(guard: Guard, workspace: 
     assert verdict.capability.handler(**verdict.resolved_args) == "hello"
 
 
-def test_the_write_capability_creates_the_file(approved_guard: Guard, workspace: Path) -> None:
+def test_the_write_capability_creates_the_file(trusting_guard: Guard, workspace: Path) -> None:
     target = workspace / "written.txt"
 
-    verdict = approved_guard.evaluate(
+    verdict = trusting_guard.evaluate(
         invoke("write_text_file", path=str(target), content="written by a capability")
     )
 
@@ -95,10 +95,10 @@ def test_the_write_capability_creates_the_file(approved_guard: Guard, workspace:
     assert target.read_text(encoding="utf-8") == "written by a capability"
 
 
-def test_the_destructive_capability_removes_the_file(approved_guard: Guard, workspace: Path) -> None:
+def test_the_destructive_capability_removes_the_file(trusting_guard: Guard, workspace: Path) -> None:
     target = workspace / "note.txt"
 
-    verdict = approved_guard.evaluate(invoke("delete_file", path=str(target)))
+    verdict = trusting_guard.evaluate(invoke("delete_file", path=str(target)))
 
     assert isinstance(verdict, Allowed)
     assert verdict.effective_side_effect == "destructive"
@@ -106,13 +106,13 @@ def test_the_destructive_capability_removes_the_file(approved_guard: Guard, work
     assert not target.exists()
 
 
-def test_a_handler_receives_the_canonical_path_not_the_input(approved_guard: Guard, workspace: Path) -> None:
+def test_a_handler_receives_the_canonical_path_not_the_input(trusting_guard: Guard, workspace: Path) -> None:
     """The handler is handed the resolved value, so it cannot re-derive a different path from the
     string the caller wrote. This is why the handlers are three lines each."""
     (workspace / "sub").mkdir()
     messy = str(workspace / "sub" / ".." / "note.txt")
 
-    verdict = approved_guard.evaluate(invoke("read_text_file", path=messy))
+    verdict = trusting_guard.evaluate(invoke("read_text_file", path=messy))
 
     assert isinstance(verdict, Allowed)
     assert verdict.resolved_args["path"] == str((workspace / "note.txt").resolve())
@@ -185,25 +185,59 @@ def test_a_read_inside_the_workspace_is_allowed(guard: Guard, workspace: Path) -
 # --- step 4: approval routing -----------------------------------------------------------------
 
 
-def test_a_write_does_not_execute_without_approval(guard: Guard, workspace: Path) -> None:
+def test_a_write_is_queued_rather_than_executed(guard: Guard, workspace: Path) -> None:
     target = workspace / "new.txt"
 
     result = guard.evaluate(invoke("write_text_file", path=str(target), content="x"))
 
-    assert isinstance(result, Denied)
-    assert result.step == "approval"
+    assert isinstance(result, Pending)
     assert not target.exists(), "the handler must not have run"
 
 
 def test_a_destructive_capability_cannot_execute_without_approval(guard: Guard, workspace: Path) -> None:
-    """ROADMAP M2 names this one explicitly."""
+    """ROADMAP M2 names this one explicitly, and M3 keeps it true by queueing rather than denying.
+
+    The distinction that matters is unchanged: nothing ran. Whether it is refused outright or waiting
+    on a human, the file is still there.
+    """
     target = workspace / "note.txt"
 
     result = guard.evaluate(invoke("delete_file", path=str(target)))
 
-    assert isinstance(result, Denied)
-    assert result.step == "approval"
+    assert isinstance(result, Pending)
+    assert result.side_effect == "destructive"
     assert target.exists(), "the file must still be there"
+
+
+def test_a_queued_request_carries_the_resolved_arguments(guard: Guard, workspace: Path) -> None:
+    """What reaches the dialog is what will run, not what was asked for."""
+    (workspace / "sub").mkdir()
+    messy = str(workspace / "sub" / ".." / "note.txt")
+
+    result = guard.evaluate(invoke("delete_file", path=messy))
+
+    assert isinstance(result, Pending)
+    assert result.resolved_args["path"] == str((workspace / "note.txt").resolve())
+    assert result.affected_paths == ((workspace / "note.txt").resolve(),)
+
+
+def test_an_invocation_already_rejected_is_not_queued_again(guard: Guard, workspace: Path) -> None:
+    """SECURITY.md section 5: a rejected operation is not retried in the same session.
+
+    Without this, 'no' means 'ask again' - and something that can ask twice can ask until the human
+    clicks the wrong button.
+    """
+    invocation = invoke("delete_file", path=str(workspace / "note.txt"))
+    first = guard.evaluate(invocation)
+    assert isinstance(first, Pending)
+
+    guard.record_rejection(first)
+
+    second = guard.evaluate(invocation)
+
+    assert isinstance(second, Denied)
+    assert second.step == "already_rejected"
+    assert second.decision == "denied_user"
 
 
 def test_a_read_outside_the_workspace_is_escalated_to_destructive(tmp_path: Path) -> None:
@@ -224,20 +258,20 @@ def test_a_read_outside_the_workspace_is_escalated_to_destructive(tmp_path: Path
 
     result = guard.evaluate(invoke("read_text_file", path=str(elsewhere / "note.txt")))
 
-    assert isinstance(result, Denied)
-    assert result.step == "approval"
-    assert result.escalated_side_effect == "destructive"
+    assert isinstance(result, Pending)
+    assert result.side_effect == "destructive", "declared read, escalated for leaving the workspace"
 
 
 # --- step 5: origin ---------------------------------------------------------------------------
 
 
-def test_untrusted_origin_cannot_write_even_inside_the_workspace(guard: Guard, workspace: Path) -> None:
-    """Denied - but by step 4, not step 5, and that is correct rather than incidental.
+def test_an_untrusted_origin_write_is_queued_carrying_its_origin(guard: Guard, workspace: Path) -> None:
+    """SECURITY.md section 6: such an invocation *surfaces for approval* with the untrusted
+    treatment, or is denied. It is not denied outright.
 
-    SECURITY.md section 6 says an untrusted_content write *surfaces for approval* with the untrusted
-    treatment, or is denied. Origin does not pre-empt the queue; it stops automatic passage. With
-    M2's approver denying everything, approval is simply the first step that says no.
+    So origin's job here is to reach the dialog intact - the UI is what makes it visually distinct
+    and defaults the selection to Reject. Nothing passes automatically while trust is off, which is
+    why origin no longer needs to deny anything by itself.
     """
     target = workspace / "x.txt"
 
@@ -245,56 +279,96 @@ def test_untrusted_origin_cannot_write_even_inside_the_workspace(guard: Guard, w
         invoke("write_text_file", origin="untrusted_content", path=str(target), content="x")
     )
 
-    assert isinstance(result, Denied)
-    assert result.step == "approval"
+    assert isinstance(result, Pending)
+    assert result.origin == "untrusted_content"
     assert not target.exists()
 
 
-def test_origin_denies_a_write_that_approval_would_have_allowed(workspace: Path, tmp_path: Path) -> None:
-    """The only test that reaches step 5 at all.
-
-    Because M2's approver denies everything, the origin check is unreachable through the normal
-    configuration - it would sit there untested until M3 made approval succeed, which is exactly when
-    a hole in it would start to matter. So approval is stubbed permissive here purely to get the
-    chain that far.
-    """
-
-    guard = Guard(
-        registry=build_registry(workspace),
-        workspace=workspace,
-        audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
-        approver=AllowingApprover(),
-    )
-    target = workspace / "x.txt"
-
+def test_untrusted_origin_may_still_read(guard: Guard, workspace: Path) -> None:
+    """The origin rule bites on write and destructive. A read inside the workspace is not what
+    section 6 is defending against."""
     result = guard.evaluate(
-        invoke("write_text_file", origin="untrusted_content", path=str(target), content="x")
-    )
-
-    assert isinstance(result, Denied)
-    assert result.step == "origin"
-    assert result.decision == "denied_origin"
-    assert not target.exists()
-
-
-def test_a_trusted_write_passes_once_approval_allows_it(workspace: Path, tmp_path: Path) -> None:
-    """The control for the test above: same permissive approver, trusted origin, and the chain
-    completes. Without this, 'origin denied it' would be indistinguishable from 'the stub was
-    broken'."""
-
-    guard = Guard(
-        registry=build_registry(workspace),
-        workspace=workspace,
-        audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
-        approver=AllowingApprover(),
-    )
-
-    result = guard.evaluate(
-        invoke("write_text_file", origin="user_direct", path=str(workspace / "x.txt"), content="x")
+        invoke("read_text_file", origin="untrusted_content", path=str(workspace / "note.txt"))
     )
 
     assert isinstance(result, Allowed)
-    assert result.effective_side_effect == "write"
+
+
+# --- trust mode, which is the button ------------------------------------------------------------
+
+
+def test_trust_mode_lets_a_destructive_operation_through_without_a_dialog(
+    trusting_guard: Guard, workspace: Path
+) -> None:
+    """The button, doing what the user asked for."""
+    result = trusting_guard.evaluate(invoke("delete_file", path=str(workspace / "note.txt")))
+
+    assert isinstance(result, Allowed)
+    assert result.auto_approved is True
+
+
+def test_trust_mode_lets_untrusted_content_through_too(trusting_guard: Guard, workspace: Path) -> None:
+    """The consequence the user accepted explicitly, asserted rather than left implicit.
+
+    With the button on there are no exceptions: an operation that exists because of content Local
+    Zero merely read executes with no human in the loop. This test exists so that the day someone
+    wants to narrow the button, the thing they are changing is visible and named.
+    """
+    result = trusting_guard.evaluate(
+        invoke("write_text_file", origin="untrusted_content", path=str(workspace / "x.txt"), content="x")
+    )
+
+    assert isinstance(result, Allowed)
+    assert result.auto_approved is True
+
+
+def test_trust_mode_does_not_bypass_containment(trusting_guard: Guard, tmp_path: Path) -> None:
+    """The property that keeps the button the user's.
+
+    Trust mode skips the approval gate, not the guard. Steps 1-3 run in every mode, which is why the
+    trust file itself - sitting outside every allowed_root - cannot be reached by a capability even
+    when approval is switched off.
+    """
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    result = trusting_guard.evaluate(invoke("read_text_file", path=str(outside)))
+
+    assert isinstance(result, Denied)
+    assert result.step == "path_containment"
+
+
+def test_trust_mode_does_not_bypass_argument_validation(trusting_guard: Guard, workspace: Path) -> None:
+    result = trusting_guard.evaluate(
+        invoke("read_text_file", path=str(workspace / "note.txt"), sudo=True)
+    )
+
+    assert isinstance(result, Denied)
+    assert result.step == "argument_schema"
+
+
+def test_a_protected_control_file_is_refused_even_with_a_root_that_covers_it(tmp_path: Path) -> None:
+    """No capability writes Local Zero's own controls, whatever its allowed_roots says.
+
+    Red line 8's sibling. This is what keeps the trust file out of reach in M5, when capabilities
+    start declaring roots wide enough to contain it.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    trust_file = tmp_path / "trust.json"
+    trust_file.write_text("{}", encoding="utf-8")
+
+    guard = Guard(
+        registry=build_registry(workspace, wide_root=tmp_path),
+        workspace=workspace,
+        audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
+        protected_paths=(trust_file,),
+    )
+
+    result = guard.evaluate(invoke("read_text_file", path=str(trust_file)))
+
+    assert isinstance(result, Denied)
+    assert result.step == "protected_path"
 
 
 def test_untrusted_origin_may_still_read(guard: Guard, workspace: Path) -> None:

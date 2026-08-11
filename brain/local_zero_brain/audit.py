@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Literal
 
 Origin = Literal["user_direct", "untrusted_content"]
-Decision = Literal["allowed", "denied_guard", "denied_user", "denied_origin"]
+
+#: ``queued`` is not in SECURITY.md section 9's original list, and is added because M3 made a state
+#: exist that the list did not cover: an invocation that has passed the guard and is waiting on a
+#: human. Without it, a request raised and never answered would leave no trace at all - which is
+#: exactly the kind of silence the audit log exists to prevent.
+Decision = Literal["allowed", "queued", "denied_guard", "denied_user", "denied_origin"]
 
 
 def hash_arguments(resolved_args: Mapping[str, object]) -> str:
@@ -54,6 +59,13 @@ class AuditRecord:
     side_effect: str
     decision: Decision
     reason: str
+    #: Whether the approval gate was bypassed because the user had turned it off.
+    #:
+    #: This is the field that matters most once M4 exists. With trust mode on, an operation
+    #: originating from content Local Zero merely read executes with no human in the loop, and this
+    #: log is the only record that it happened. A record that did not distinguish "a human approved
+    #: this" from "the button was on" would not be that record.
+    trust_mode: bool = False
     ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"))
 
     def to_entry(self) -> dict[str, object]:
@@ -66,6 +78,7 @@ class AuditRecord:
             "side_effect": self.side_effect,
             "decision": self.decision,
             "reason": self.reason,
+            "trust_mode": self.trust_mode,
         }
 
 
