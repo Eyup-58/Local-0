@@ -87,8 +87,20 @@ Exit criteria, with the evidence for each. Verified 2026-08-11.
 - [x] `/bench` runs and produces real numbers; `docs/PERFORMANCE.md` §5 is filled in with them and
       the provisional budgets are revised against measurement — all five budgets measured, P2, P3
       and P5 revised. §5 also records what the numbers do **not** cover
-- [ ] `/threat-check` reports no CRITICAL or HIGH findings — **NOT RUN.** This is a user-triggered
-      slash command; the agent cannot invoke it. It is the one criterion still outstanding
+- [x] `/threat-check` reports no CRITICAL or HIGH findings — run 2026-08-12 against `SECURITY.md`,
+      all ten items. Clean on the six that apply: no process-launching or `eval` construct exists in
+      any layer (0 matches across `system/`, `brain/`, `ui/`), the pipe ACL adds exactly one rule for
+      the current SID with `MaxServerInstances = 1`, every process is `asInvoker` with a runtime
+      guard, the brain binds `127.0.0.1` with no CORS middleware, no secret appears in first-party
+      code, and no unavailable sensor is rendered as a zero. Four items are not applicable in M1
+      because no capability registry, path argument, approval flow or invocation exists yet — and
+      the absence is enforced rather than incidental: a `capability.invoke` frame is refused at both
+      boundaries (`InboundMessageParserTests.cs`, `guards.test.ts`).
+
+      **One MEDIUM, closed in M1:** `SECURITY.md` §7 named a high-entropy pre-commit hook as half of
+      its defence against a committed credential, and no such hook existed — `.git/hooks` held only
+      samples and `core.hooksPath` was unset. `.githooks/pre-commit` now implements it, verified
+      against eight cases including the exact `github.txt` shape that prompted it
 
 **Contract amendment during M1.** `per_core_percent` entries were widened to `number | null` so a
 parked core can hold its slot. Taken by explicit human decision and recorded in `CONTRACTS.md` §5.
