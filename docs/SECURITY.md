@@ -351,8 +351,28 @@ this with a `Secret` type overriding `ToString()`.
 remove it.
 
 *Closed by:* `.gitignore` covering the patterns **before the first commit** (already written), plus
-a pre-commit hook rejecting high-entropy assignments. Neither is sufficient alone: the ignore list
-catches common names, the hook catches novel ones.
+`.githooks/pre-commit`, which refuses a commit carrying a vendor-minted token or a secret-shaped
+name assigned a long opaque literal. Neither is sufficient alone: the ignore list catches common
+names, the hook catches novel ones.
+
+**Enable the hook once per clone** — git does not distribute hooks, and `.git/hooks` is not
+version-controlled:
+
+```
+git config core.hooksPath .githooks
+```
+
+A line that legitimately contains a matching string — documentation, a fixture, an example — is
+exempted with `pragma: allowlist secret` on that line, which stays visible in the diff and therefore
+reviewable. `git commit --no-verify` bypasses the hook entirely; that is git's design, and the hook
+exists to stop the accident rather than the intent.
+
+**Why both halves are written down here.** During M1 a file named `github.txt` holding a live PAT sat
+untracked in the working tree, matched by no `.gitignore` rule, one `git add -A` away from a
+repository intended to go public. The ignore list is a list of names somebody thought of in advance,
+and that is exactly the failure it cannot cover. The token was revoked and the file deleted before
+any commit — `git log --all -- github.txt` is empty — and the hook was written because the near-miss
+demonstrated the gap rather than because the gap was theorised.
 
 **If a secret is ever exposed, it is rotated.** Removing it from the working tree is not a
 remediation; the value is compromised from the moment it was written.

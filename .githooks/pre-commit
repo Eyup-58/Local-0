@@ -1,0 +1,77 @@
+#!/bin/sh
+#
+# Refuses a commit that would introduce a credential.
+#
+# docs/SECURITY.md section 7 names two controls against leak path B - a developer writes a key into
+# the working tree, `git add -A` sweeps it up, and it is in history permanently, where deleting the
+# file does not remove it. The two are `.gitignore` and this hook, and the document is explicit that
+# neither is sufficient alone: the ignore list catches known filenames, this catches novel ones.
+#
+# This is written in POSIX sh with nothing but git and grep because a hook that needs an interpreter
+# is a hook that silently stops running the day that interpreter moves. Git ships a shell on every
+# platform it supports.
+#
+# ENABLE IT ONCE PER CLONE - git does not distribute hooks, and .git/hooks is not version-controlled:
+#
+#     git config core.hooksPath .githooks
+#
+# A line that legitimately contains a matching string - documentation, a test fixture, an example -
+# is exempted by putting `pragma: allowlist secret` on that line. The exemption is deliberately
+# visible in the diff, so it is reviewable rather than silent.
+#
+# `git commit --no-verify` bypasses this entirely. That is git's design, not a hole worth patching:
+# a developer who wants the commit will get it, and the point here is to stop the accident, not the
+# intent.
+
+set -eu
+
+ALLOWLIST_MARKER='pragma: allowlist secret'
+
+# Vendor-issued credentials, matched on the prefix the vendor guarantees. These are near-zero false
+# positive: nothing but the real thing looks like this.
+MINTED_TOKEN='github_pat_[A-Za-z0-9_]{20,}|gh[posu]_[A-Za-z0-9]{30,}|sk-(ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+# A secret-shaped name assigned a long opaque literal. This is what "high entropy assignment" means
+# in practice: the length and the alphabet are the entropy proxy, and the name is what makes a hit
+# worth a human's attention rather than noise.
+SECRET_ASSIGNMENT='(api[_-]?key|apikey|secret|token|password|passwd|access[_-]?key|client[_-]?secret|private[_-]?key)[[:space:]]*[:=][[:space:]]*.?["'"'"'`][A-Za-z0-9+/_=-]{20,}["'"'"'`]'
+
+report=$(mktemp)
+trap 'rm -f "$report"' EXIT
+
+# --diff-filter=ACM: added, copied and modified. A deletion cannot introduce a secret.
+#
+# Read with `while read` rather than iterating a word-split variable, so a path containing a space
+# stays one path. The findings go to a file rather than a shell variable because the loop body runs
+# in a subshell on the right-hand side of a pipe, and a count assigned there would not survive it.
+git diff --cached --name-only --diff-filter=ACM | while IFS= read -r path; do
+    # The staged blob, not the working tree: `git add` followed by an edit would otherwise let the
+    # scan read something different from what is about to be committed.
+    #
+    # Streamed straight into grep rather than captured into a variable, because command substitution
+    # strips null bytes - which silently turns any binary test built on it into a match-everything.
+    # grep -I handles binary input by declining to match, which is the behaviour wanted here.
+    git show ":$path" 2>/dev/null \
+        | grep -nEiI "$MINTED_TOKEN|$SECRET_ASSIGNMENT" \
+        | grep -vF "$ALLOWLIST_MARKER" \
+        | awk -v path="$path" -F: '{ print "    " path ":" $1 }' >> "$report"
+done
+
+if [ -s "$report" ]; then
+    printf '\n  COMMIT REFUSED - this looks like a credential.\n\n' >&2
+    cat "$report" >&2
+    cat >&2 <<'EOF'
+
+  If this is a real credential:
+    Revoke it at the provider first, then remove it from the file. Deleting it from the
+    working tree is not a remediation - docs/SECURITY.md section 7. A value that was written
+    down is compromised from that moment, whether or not it was ever pushed.
+
+  If this is documentation, a fixture or an example:
+    Append   pragma: allowlist secret   to that line. It stays visible in the diff.
+
+EOF
+    exit 1
+fi
+
+exit 0
