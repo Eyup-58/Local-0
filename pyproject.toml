@@ -1,0 +1,48 @@
+[project]
+name = "local-zero"
+version = "0.1.0"
+description = "Local Zero brain layer - capability registry, guard chain and LLM routing."
+requires-python = ">=3.13"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    # Windows named pipe access. Python's standard library has none, and the pipe's OS-enforced
+    # ACL is the reason this transport was chosen over a loopback socket.
+    # See docs/ARCHITECTURE.md section 4.
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    # Starlette's TestClient transport, used to drive the WebSocket endpoint in-process.
+    # httpx2 rather than httpx: this Starlette version deprecates the latter and says so on every
+    # run, and a suite that prints a warning nobody intends to act on trains people to ignore
+    # warnings.
+    "httpx2>=0.28",
+    # Used by contracts/validate_examples.py and by the tests that hold the brain's Pydantic
+    # models against the schemas they mirror.
+    "jsonschema>=4.23",
+    # bench/ only: process working set and CPU time, which are otherwise several ctypes calls per
+    # metric. Not a runtime dependency of the brain.
+    "psutil>=6.1",
+    # bench/ only: a WebSocket client for the latency harness. uvicorn already pulls this in as an
+    # extra, but the bench depends on it directly rather than on that happening to remain true.
+    "websockets>=14.1",
+]
+
+[tool.uv]
+# The brain is an application, not a library, and nothing installs it. Skipping the build step
+# keeps a three-language repository from needing a Python build backend it has no other use for.
+package = false
+
+[tool.pytest.ini_options]
+# This file sits at the repository root rather than under brain/ so that the commands written in
+# CLAUDE.md work from the root, where every other layer's commands are also run.
+pythonpath = ["brain"]
+testpaths = ["brain/tests"]
+asyncio_mode = "auto"
+addopts = "--strict-markers"
