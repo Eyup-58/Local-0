@@ -134,8 +134,9 @@
               "properties": {
                 "total_percent": { "$ref": "#/$defs/percent" },
                 "per_core_percent": {
+                  "description": "Per logical processor, ordered by processor group then core number. Position IS the core's identity: index 5 is core 5, always. A null entry means that core reported no utilization for this sample - Windows parks idle cores, and a parked core has nothing to report. Measured on the target machine: 3 to 6 of 28 cores are parked on roughly half of all samples, all of them E-cores. The array is therefore either absent entirely (null) or complete, with nulls holding the places of cores that did not report. It is never compacted, because dropping an entry shifts every core after it and draws one core's load on another's bar.",
                   "type": ["array", "null"],
-                  "items": { "type": "number", "minimum": 0, "maximum": 100 }
+                  "items": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }
                 },
                 "frequency_mhz": { "$ref": "#/$defs/nullableNumber" },
                 "temperature_c": {

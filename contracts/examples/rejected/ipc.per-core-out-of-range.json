@@ -1,0 +1,30 @@
+{
+  "_why_rejected": "Allowing null entries in per_core_percent must not have loosened the range check on the entries that DO carry a value. Core 2 reports 140 percent, which is not a percentage. Without this example, a schema edit that replaced the item type outright - rather than widening it - would pass every other test in the suite.",
+  "v": 1,
+  "id": "c9d13a76-4e28-4b0f-9a35-6f80e2c17d94",
+  "ts": "2026-08-11T09:14:05.140Z",
+  "type": "telemetry.sample",
+  "payload": {
+    "seq": 3,
+    "sampled_at": "2026-08-11T09:14:05.137Z",
+    "cpu": {
+      "total_percent": 8.7,
+      "per_core_percent": [12.4, null, 140.0, 3.0],
+      "frequency_mhz": 3400.0,
+      "temperature_c": null
+    },
+    "memory": {
+      "used_bytes": 18086948864,
+      "total_bytes": 68474896384,
+      "commit_used_bytes": 30334926848,
+      "commit_limit_bytes": 72769863680
+    },
+    "gpu": {
+      "utilization_percent": 3.4,
+      "vram_used_bytes": 1817518080,
+      "vram_total_bytes": 16963137536,
+      "temperature_c": null
+    },
+    "uptime_seconds": 184216
+  }
+}

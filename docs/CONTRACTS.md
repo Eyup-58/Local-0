@@ -92,6 +92,17 @@ It is never rendered as zero, never interpolated, never inferred from load. On t
 `cpu.temperature_c` and `gpu.temperature_c` are expected to be null permanently — see
 `ARCHITECTURE.md` §3.
 
+**`per_core_percent` carries nulls of its own, and position is identity.** Index 5 is core 5,
+always. A null entry means that core reported nothing for this sample, because Windows parks idle
+cores and a parked core has no utilization to report. Measured on the target machine 2026-08-11:
+PDH returns all 30 instances every time, but 3–6 of the 28 cores come back with a non-success
+`CStatus` on roughly half of all samples, and they are almost always the E-cores of the i7-14700KF.
+
+The array is therefore **either null entirely or complete**, with nulls holding the places of cores
+that did not report. It is never compacted. Dropping an entry shifts every core after it, and the
+UI then draws one core's load on another core's bar — a number in the wrong place, which is worse
+than no number, because the labelled gap is visible and the misaligned bar is not.
+
 ### `error` — either direction
 
 Reports a fault without terminating the connection. `code` is a closed enum; `message` is
@@ -159,6 +170,20 @@ be updated together. This is a deliberate trade — strict validation catches sm
 the cost is that the two ends ship in lockstep. With three layers in one repository, that cost is
 low.
 
+### Amendments to v1
+
+One change has been made to v1 in place rather than by incrementing the version.
+
+**2026-08-11 — `per_core_percent` items widened from `number` to `number | null`.** Under the rule
+above this is breaking: it changes a field's type, and a receiver validating v1 strictly would
+reject the new shape. It was amended in place anyway, by explicit human decision, because M1 is the
+first implementation of this contract and **no v1 consumer exists outside this repository** — there
+is nothing deployed for the increment to protect. All three layers were updated in the same
+change.
+
+This is recorded rather than done quietly, and it is not a precedent: once anything ships, a
+breaking change increments `v`. The reason for the change is in §3.
+
 ---
 
 ## 6. Change procedure
@@ -209,22 +234,37 @@ Current state, verified 2026-08-11: **12/12 expectations hold** (8 valid, 4 reje
 
 ---
 
-## 8. Open question — the Python end of the named pipe
+## 8. The Python end of the named pipe — decided in M1
 
-Unresolved in M0, deliberately. Decided in M1 against working code, not guessed at here.
+**Decision: `pywin32` (`win32file` / `win32pipe` / `win32event`), with a dedicated reader thread.**
+Taken 2026-08-11 against working code, as M0 said it would be. Implemented in
+`brain/local_zero_brain/ipc/pipe_client.py`.
 
-Python's standard library has no Windows named pipe support.
+Python's standard library has no Windows named pipe support, so the choice was between `pywin32`
+and abandoning the pipe for a `127.0.0.1` socket. The socket is simpler code and natively
+asyncio-aware, and it forfeits the only reason the transport was chosen: a pipe carries an
+OS-enforced ACL, while a loopback listener is reachable by every process running as any user on the
+machine and can only be defended with an application-level secret that has to be stored somewhere.
+That somewhere becomes the new weakest link, on a channel whose messages will eventually authorize
+OS actions.
 
-**Option 1 — `pywin32` (`win32file` / `win32pipe`).** Reliable and well-trodden. The handles are
-not asyncio-aware, so the brain needs a dedicated reader thread feeding an `asyncio.Queue` through
-`loop.call_soon_threadsafe`. One extra moving part, but a well-understood shape, and it preserves
-the OS-enforced ACL that motivated choosing a named pipe at all.
+`pywin32` handles are not asyncio-aware, so the brain runs one reader thread feeding an
+`asyncio.Queue` through `loop.call_soon_threadsafe`. That cost was known in M0 and is what it
+looked like in practice.
 
-**Option 2 — `127.0.0.1` TCP.** Simpler code, no extra dependency, natively asyncio. It abandons
-the ACL boundary and replaces it with an application-level shared secret that has to be stored
-somewhere — and that somewhere becomes the new weakest link. Every local process can reach a
-loopback listener.
+**Measured while implementing it — the pipe must be opened for overlapped I/O.** The first version
+used a synchronous `ReadFile`. A synchronous read on a pipe with no data blocks until data arrives,
+and on Windows closing the handle from another thread does **not** reliably unblock it: the reader
+thread could not be stopped and the test suite hung on shutdown. The fix is `FILE_FLAG_OVERLAPPED`
+plus a `WaitForMultipleObjects` on the read's completion event and a stop event.
 
-**Presumptive choice: Option 1**, because the security property is the reason the transport was
-chosen. Option 2 should only win if Option 1 proves genuinely unworkable, and if it does, the
-change is a `SECURITY.md` amendment before it is a code change.
+Polling with `PeekNamedPipe` would also have worked, at the cost of a syscall every few
+milliseconds forever. A layer that reports on machine resource use has no business burning idle CPU
+to do it — see `PERFORMANCE.md` budget P5 — so the read waits on an event and costs nothing while
+idle.
+
+Evidence: `brain/tests/test_pipe_client.py` exercises a real Windows named pipe rather than a mock,
+including a regression test asserting that a client with nothing to read still stops promptly.
+
+If this is ever revisited in favour of loopback TCP, that is a `SECURITY.md` amendment before it is
+a code change.

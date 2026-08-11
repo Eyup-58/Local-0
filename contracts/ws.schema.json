@@ -151,8 +151,9 @@
               "properties": {
                 "total_percent": { "$ref": "#/$defs/percent" },
                 "per_core_percent": {
+                  "description": "Forwarded from the system layer. Position IS the core's identity, and a null entry means that core reported nothing for this sample because Windows had parked it. The UI renders a null entry as a labelled gap in that core's slot, never as zero and never by closing the gap up. See ipc.schema.json for the measurement behind this.",
                   "type": ["array", "null"],
-                  "items": { "type": "number", "minimum": 0, "maximum": 100 }
+                  "items": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }
                 },
                 "frequency_mhz": { "$ref": "#/$defs/nullableNumber" },
                 "temperature_c": { "$ref": "#/$defs/nullableNumber" }
