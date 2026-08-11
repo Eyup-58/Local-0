@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>LocalZero.System</RootNamespace>
+    <AssemblyName>LocalZero.System</AssemblyName>
+    <Version>0.1.0</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!-- Every process runs asInvoker. No elevated helper, no UAC prompt anywhere in Local Zero.
+         See docs/ARCHITECTURE.md privilege model and CLAUDE.md invariant 11. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- This machine's system locale is Turkish. Invariant globalization removes a whole class of
+         locale bugs from a process that only ever formats machine-readable numbers: no comma
+         decimal separators on the wire, and no Turkish dotless-i surprises in the ordinal string
+         comparisons used to match PDH instance names. Nothing here is presented to a human in
+         their own language - that is the UI layer's job. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Everything in this assembly is internal: it is a sidecar, not a library, and nothing
+         outside the process is meant to link against it. The test project needs to see in. -->
+    <InternalsVisibleTo Include="LocalZero.System.Tests" />
+  </ItemGroup>
+
+</Project>

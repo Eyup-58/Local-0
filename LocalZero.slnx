@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="system/LocalZero.System/LocalZero.System.csproj" />
+  <Project Path="system/LocalZero.System.Tests/LocalZero.System.Tests.csproj" />
+</Solution>

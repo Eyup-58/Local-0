@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="0.1.0.0" name="LocalZero.System" />
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <!-- asInvoker, permanently. Local Zero has no elevated helper and prompts for UAC at no
+             point. Elevation would buy nothing: everything this sidecar reads is available
+             unelevated, and the one thing it might have bought - CPU temperature - needs a ring-0
+             driver, not privilege. See docs/ARCHITECTURE.md sections 2 and 3.
+
+             The IPC contract encodes this too: hello.payload.elevated is const false, so a sidecar
+             claiming elevation is a contract violation the brain refuses. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+
+</assembly>
