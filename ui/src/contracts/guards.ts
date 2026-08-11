@@ -1,0 +1,204 @@
+/**
+ * Validation for inbound WebSocket frames.
+ *
+ * The rule from docs/CONTRACTS.md section 2 is that a frame is validated **before any field of it
+ * is read**. A frame that fails validation has no readable fields, so nothing here reaches into a
+ * message to explain what was wrong with it beyond naming the field.
+ *
+ * Hand-written rather than generated or schema-driven at runtime: the UI ships no validator
+ * dependency, and every rule that matters is visible in one file that a reviewer can read against
+ * contracts/ws.schema.json.
+ */
+
+import {
+  CONTRACT_VERSION,
+  type CpuPayload,
+  type GpuPayload,
+  type MemoryPayload,
+  type SensorCapability,
+  type SensorSource,
+  type ServerMessage,
+  type TelemetryPayload,
+  type WsErrorCode,
+} from "./types";
+
+export type ValidationResult =
+  | { readonly ok: true; readonly message: ServerMessage }
+  | { readonly ok: false; readonly reason: string };
+
+const SENSOR_SOURCES: readonly SensorSource[] = ["pdh_english", "win32_api", "wmi", "adlx", "none"];
+
+const ERROR_CODES: readonly WsErrorCode[] = [
+  "schema_violation",
+  "unsupported_version",
+  "handshake_required",
+  "system_unavailable",
+  "internal_error",
+];
+
+const ENVELOPE_FIELDS = ["v", "id", "ts", "type", "payload"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isPercent(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+/** Requires exactly the five envelope fields: no fewer, and crucially no more. */
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => key in value);
+}
+
+function isSensorCapability(value: unknown): value is SensorCapability {
+  if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, ["field", "available", "source", "unavailable_reason"])) return false;
+  if (!isString(value.field) || value.field.length === 0) return false;
+  if (typeof value.available !== "boolean") return false;
+  if (!isString(value.source) || !SENSOR_SOURCES.includes(value.source as SensorSource)) return false;
+  if (value.unavailable_reason !== null && !isString(value.unavailable_reason)) return false;
+
+  // The pairing the schema enforces: a sensor that will never carry a value has to say why, or the
+  // UI has nothing to show the user in place of it.
+  if (!value.available && (value.unavailable_reason === null || value.source !== "none")) return false;
+
+  return true;
+}
+
+function isSensorList(value: unknown): value is SensorCapability[] {
+  return Array.isArray(value) && value.every(isSensorCapability);
+}
+
+function isCpu(value: unknown): value is CpuPayload {
+  if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, ["total_percent", "per_core_percent", "frequency_mhz", "temperature_c"])) return false;
+  if (!isPercent(value.total_percent)) return false;
+  if (!isNullableNumber(value.frequency_mhz)) return false;
+  if (!isNullableNumber(value.temperature_c)) return false;
+
+  const cores = value.per_core_percent;
+  if (cores !== null && !(Array.isArray(cores) && cores.every(isPercent))) return false;
+
+  return true;
+}
+
+function isMemory(value: unknown): value is MemoryPayload {
+  if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, ["used_bytes", "total_bytes", "commit_used_bytes", "commit_limit_bytes"])) return false;
+  return (
+    isNullableNumber(value.used_bytes) &&
+    isNullableNumber(value.total_bytes) &&
+    isNullableNumber(value.commit_used_bytes) &&
+    isNullableNumber(value.commit_limit_bytes)
+  );
+}
+
+function isGpu(value: unknown): value is GpuPayload {
+  if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, ["utilization_percent", "vram_used_bytes", "vram_total_bytes", "temperature_c"])) {
+    return false;
+  }
+  return (
+    isPercent(value.utilization_percent) &&
+    isNullableNumber(value.vram_used_bytes) &&
+    isNullableNumber(value.vram_total_bytes) &&
+    isNullableNumber(value.temperature_c)
+  );
+}
+
+function isTelemetryPayload(value: unknown): value is TelemetryPayload {
+  if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, ["seq", "sampled_at", "cpu", "memory", "gpu", "uptime_seconds"])) return false;
+  if (typeof value.seq !== "number" || !Number.isInteger(value.seq) || value.seq < 0) return false;
+  if (!isString(value.sampled_at)) return false;
+  if (!isNullableNumber(value.uptime_seconds)) return false;
+
+  return isCpu(value.cpu) && isMemory(value.memory) && isGpu(value.gpu);
+}
+
+function validatePayload(type: string, payload: unknown): string | null {
+  switch (type) {
+    case "server.hello": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["component", "app_version", "poll_interval_ms", "system_connected", "sensors"])) {
+        return "server.hello payload has unexpected fields";
+      }
+      if (payload.component !== "brain") return "server.hello component is not 'brain'";
+      if (!isString(payload.app_version)) return "server.hello app_version is not a string";
+      if (typeof payload.poll_interval_ms !== "number") return "server.hello poll_interval_ms is not a number";
+      if (typeof payload.system_connected !== "boolean") return "server.hello system_connected is not a boolean";
+      if (!isSensorList(payload.sensors)) return "server.hello sensors is not a valid declaration";
+      return null;
+    }
+
+    case "system.status": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["connected", "since", "reason", "sensors"])) {
+        return "system.status payload has unexpected fields";
+      }
+      if (typeof payload.connected !== "boolean") return "system.status connected is not a boolean";
+      if (!isString(payload.since)) return "system.status since is not a string";
+      if (payload.reason !== null && !isString(payload.reason)) return "system.status reason is not a string or null";
+      if (!isSensorList(payload.sensors)) return "system.status sensors is not a valid declaration";
+      return null;
+    }
+
+    case "telemetry.sample":
+      return isTelemetryPayload(payload) ? null : "telemetry.sample payload does not match the contract";
+
+    case "error": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["code", "message", "in_reply_to"])) return "error payload has unexpected fields";
+      if (!isString(payload.code) || !ERROR_CODES.includes(payload.code as WsErrorCode)) return "error code is unknown";
+      if (!isString(payload.message) || payload.message.length === 0) return "error message is empty";
+      if (payload.in_reply_to !== null && !isString(payload.in_reply_to)) return "error in_reply_to is malformed";
+      return null;
+    }
+
+    default:
+      return `unknown message type '${type}'`;
+  }
+}
+
+/**
+ * Parses and validates one frame.
+ *
+ * Returns a reason rather than throwing, because a bad frame is dropped and counted - it does not
+ * tear down the connection, and it does not become an exception the render tree has to survive.
+ */
+export function parseServerMessage(raw: string): ValidationResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "frame is not valid JSON" };
+  }
+
+  if (!isRecord(value)) return { ok: false, reason: "frame is not an object" };
+  if (!hasExactKeys(value, ENVELOPE_FIELDS)) return { ok: false, reason: "envelope fields do not match the contract" };
+  if (typeof value.v !== "number") return { ok: false, reason: "v is not a number" };
+
+  // Unknown version fails closed. No best-effort parsing of a shape this build does not implement.
+  if (value.v !== CONTRACT_VERSION) {
+    return { ok: false, reason: `v is ${value.v}, this build implements ${CONTRACT_VERSION}` };
+  }
+
+  if (!isString(value.id)) return { ok: false, reason: "id is not a string" };
+  if (!isString(value.ts)) return { ok: false, reason: "ts is not a string" };
+  if (!isString(value.type)) return { ok: false, reason: "type is not a string" };
+
+  const failure = validatePayload(value.type, value.payload);
+  if (failure !== null) return { ok: false, reason: failure };
+
+  return { ok: true, message: value as unknown as ServerMessage };
+}
