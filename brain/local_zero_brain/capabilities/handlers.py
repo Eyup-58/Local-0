@@ -1,9 +1,10 @@
-"""The three example capabilities, one per side effect.
+"""Every registered capability, and nothing else may run.
 
-ROADMAP M2 asks for exactly this: one ``read``, one ``write``, one ``destructive``, existing so the
-guard has something real to be proven against. They are boring on purpose. ``delete_file`` taking a
-``path`` is the same shape SECURITY.md section 5 already uses for its approval payload example, so
-the document and the code say the same thing.
+M2 opened with three example capabilities, one per side effect, existing so the guard had something
+real to be proven against. M4.5 added memory's three, and M5 the ones that answer a question about
+the machine. The originals are boring on purpose: ``delete_file`` taking a ``path`` is the same
+shape SECURITY.md section 5 already uses for its approval payload example, so the document and the
+code say the same thing.
 
 **A handler never sees a raw argument.** By the time one runs, the guard has validated the schema,
 canonicalised every path and proven containment, and the handler is called with the resolved values.
@@ -13,9 +14,12 @@ decided somewhere a test can reach it.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
+import psutil
 from pydantic import Field
 
 from local_zero_brain.capabilities.registry import (
@@ -24,6 +28,20 @@ from local_zero_brain.capabilities.registry import (
     CapabilityRegistry,
     PathArgument,
 )
+from local_zero_brain.capabilities.results import ResultTable
+
+_BYTES_PER_MB = 1024 * 1024
+
+#: Absolute, under the Windows directory, rather than the bare name.
+#:
+#: ``explorer.exe`` alone is resolved by CreateProcess's search order, and a directory earlier in
+#: that order holding a file of that name decides what launches - the classic binary-planting
+#: vector. Found by /threat-check on this capability, which M5 requires per capability rather than
+#: once at the milestone boundary; the bare name was in the first version of open_folder.
+#:
+#: ``SystemRoot`` rather than a hardcoded ``C:\\Windows``: the drive letter is not guaranteed, and a
+#: path that is wrong on somebody else's machine is a capability that silently does nothing there.
+_EXPLORER = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe")
 
 #: Enough for a note, far short of enough to fill a disk by accident. A bound exists because an
 #: unbounded write is a denial-of-service with extra steps.
@@ -66,6 +84,66 @@ def write_text_file(path: str, content: str) -> None:
 
 def delete_file(path: str) -> None:
     Path(path).unlink()
+
+
+class ListProcessesArgs(CapabilityArgs):
+    """No arguments at all.
+
+    Not even a filter. A name to match on would be a string from the model reaching an enumeration,
+    and the whole list is 200 rows at most anyway - there is nothing here for a filter to save.
+    """
+
+
+class OpenFolderArgs(CapabilityArgs):
+    path: PathArgument
+
+
+def list_processes() -> ResultTable:
+    """What is running, as name, pid, CPU and working set.
+
+    **Metadata only.** ``psutil`` reads what Windows already publishes about a process; nothing here
+    opens a handle to another process's address space, which is the M5 exit criterion that rules
+    out the obvious alternative implementations.
+
+    A process that exits mid-enumeration is skipped rather than fatal - the list is a snapshot of a
+    moving thing, and a scan that failed because something closed while it ran would fail most of
+    the time on a busy machine.
+    """
+    rows: list[tuple[str, int, str, int]] = []
+
+    for process in psutil.process_iter(["name", "pid", "cpu_percent", "memory_info"]):
+        try:
+            info = process.info
+            memory = info.get("memory_info")
+            rows.append(
+                (
+                    info.get("name") or "(unnamed)",
+                    info["pid"],
+                    f"{info.get('cpu_percent') or 0.0:.1f}",
+                    round((memory.rss if memory else 0) / _BYTES_PER_MB),
+                )
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Exited between the enumeration and the read, or belongs to another user. Neither is
+            # an error: it is a row we do not have, and the alternative is a capability that fails
+            # whenever the machine is busy.
+            continue
+
+    # Heaviest first. A 200-row cap has to drop something, and the processes worth seeing are the
+    # ones using the machine rather than the ones that sort early by name.
+    rows.sort(key=lambda row: row[3], reverse=True)
+
+    return ResultTable.of(("name", "pid", "cpu_percent", "memory_mb"), rows)
+
+
+def open_folder(path: str) -> None:
+    """Opens a folder in Explorer.
+
+    ``ArgumentList``-equivalent: a list of arguments with no shell between here and the process, so
+    there is no command line for a path to be interpolated into. Red line 3 - and a folder name is
+    exactly the kind of string that would carry an ampersand into a shell that honoured it.
+    """
+    subprocess.Popen([_EXPLORER, path], shell=False)  # noqa: S603 - argv list, no shell
 
 
 #: Written by the handler, never by the caller. See ``memory_write``.
@@ -187,6 +265,23 @@ def build_registry(
                 side_effect="read",
                 allowed_roots=read_roots,
                 handler=read_text_file,
+            ),
+            Capability(
+                name="list_processes",
+                args_schema=ListProcessesArgs,
+                side_effect="read",
+                # None, and this capability is the reason that is now expressible. It takes no path,
+                # so step 3 has nothing to resolve and any root declared here would never be
+                # consulted - a containment claim no code enforces.
+                allowed_roots=(),
+                handler=list_processes,
+            ),
+            Capability(
+                name="open_folder",
+                args_schema=OpenFolderArgs,
+                side_effect="write",
+                allowed_roots=(workspace,),
+                handler=open_folder,
             ),
             Capability(
                 name="write_text_file",

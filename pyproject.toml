@@ -12,6 +12,12 @@ dependencies = [
     # ACL is the reason this transport was chosen over a loopback socket.
     # See docs/ARCHITECTURE.md section 4.
     "pywin32>=306; sys_platform == 'win32'",
+    # Process metadata for the list_processes capability: name, pid, CPU and working set. Otherwise
+    # several ctypes calls per metric, each with its own way of being wrong about a process that
+    # exited mid-enumeration. It reads what the OS already publishes about a process and never
+    # touches another process's memory - the M5 exit criterion that rules out the alternative.
+    # Was a bench-only dev dependency until M5.
+    "psutil>=6.1",
 ]
 
 [dependency-groups]
@@ -26,9 +32,6 @@ dev = [
     # Used by contracts/validate_examples.py and by the tests that hold the brain's Pydantic
     # models against the schemas they mirror.
     "jsonschema>=4.23",
-    # bench/ only: process working set and CPU time, which are otherwise several ctypes calls per
-    # metric. Not a runtime dependency of the brain.
-    "psutil>=6.1",
     # bench/ only: a WebSocket client for the latency harness. uvicorn already pulls this in as an
     # extra, but the bench depends on it directly rather than on that happening to remain true.
     "websockets>=14.1",
