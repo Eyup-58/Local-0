@@ -12,7 +12,7 @@ this module. Two reasons for that order rather than building models and dumping 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -206,6 +206,33 @@ class WsMessageFactory:
                 "capability": capability[:MAX_DETAIL_LENGTH],
                 "message": _truncate(message, MAX_ERROR_MESSAGE_LENGTH) or "(no detail was recorded)",
                 "status": status,
+            },
+        )
+
+    def capability_result(
+        self,
+        *,
+        at: str,
+        capability: str,
+        columns: Sequence[str],
+        rows: Sequence[Sequence[str]],
+        truncated: bool,
+    ) -> dict[str, Any]:
+        """What a capability that read something found.
+
+        Every cell leaves here as a string and the UI renders it as a text node. These values came
+        from outside - a process name, a game title - so they are untrusted text by
+        docs/SECURITY.md section 2: safe to display, never an instruction to anything that reads
+        them, and never routed back into the planner.
+        """
+        return self._envelope(
+            "capability.result",
+            {
+                "at": at,
+                "capability": capability[:MAX_DETAIL_LENGTH],
+                "columns": [str(column) for column in columns],
+                "rows": [[str(cell) for cell in row] for row in rows],
+                "truncated": truncated,
             },
         )
 

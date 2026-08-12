@@ -620,6 +620,55 @@
       },
       "required": ["v", "id", "ts", "type", "payload"],
       "additionalProperties": false
+    },
+
+    "capabilityResultMessage": {
+      "description": "brain -> ui. What a capability that reads something found. Outbound only, like turn.state and tool.log: a tab cannot assert a result for an operation that never ran. tool.log says a capability finished; this carries what it produced, because a process list or a game library is a table and paraphrasing it into a log line would lose it.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "capability.result" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "at": { "$ref": "#/$defs/timestamp" },
+            "capability": {
+              "description": "The registered capability name, as the guard's step 1 knows it. Not a description of intent and not a name the model chose.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "columns": {
+              "description": "Header labels, written by the capability's handler rather than by a model. Every row carries exactly this many cells; the brain rejects a ragged result rather than sending one the UI would draw misaligned.",
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 40 }
+            },
+            "rows": {
+              "description": "The result, every cell a string. Strings on purpose: these values come from outside - a process name, a game title, a path - which makes them untrusted text by docs/SECURITY.md section 2. Sending them as display text means nothing downstream computes with them, and the UI renders them as text nodes, never as markup.",
+              "type": "array",
+              "maxItems": 200,
+              "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": { "type": "string", "maxLength": 256 }
+              }
+            },
+            "truncated": {
+              "description": "True when there were more rows than maxItems allows and the rest were dropped. Stated rather than left to be inferred from a round-looking count: a list silently cut at 200 is a lie about what is on the machine.",
+              "type": "boolean"
+            }
+          },
+          "required": ["at", "capability", "columns", "rows", "truncated"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
     }
   },
 
@@ -641,6 +690,7 @@
     { "$ref": "#/$defs/memoryReindexMessage" },
     { "$ref": "#/$defs/turnStateMessage" },
     { "$ref": "#/$defs/toolLogMessage" },
-    { "$ref": "#/$defs/turnRequestMessage" }
+    { "$ref": "#/$defs/turnRequestMessage" },
+    { "$ref": "#/$defs/capabilityResultMessage" }
   ]
 }

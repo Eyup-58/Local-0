@@ -14,6 +14,7 @@ import type {
   SensorCapability,
   TelemetryPayload,
   ToolLog,
+  CapabilityResult,
   TurnStateName,
 } from "../contracts/types";
 
@@ -79,6 +80,13 @@ export interface TelemetryState {
   readonly toolCalls: number;
   /** Newest first, capped at TOOL_LOG_LIMIT. Only ever what the brain actually reported running. */
   readonly toolLog: readonly ToolLog["payload"][];
+  /**
+   * What the last capability that read something found, or null when none has.
+   *
+   * Every cell is untrusted text - a process name, a game title - and is safe only because it is
+   * rendered as a text node. Nothing here is sent back to the brain.
+   */
+  readonly lastResult: CapabilityResult["payload"] | null;
 }
 
 /**
@@ -132,6 +140,7 @@ export const initialState: TelemetryState = {
   turnCount: 0,
   toolCalls: 0,
   toolLog: [],
+  lastResult: null,
 };
 
 export type TelemetryAction =
@@ -249,6 +258,15 @@ function applyFrame(state: TelemetryState, raw: string, now: number): TelemetryS
         // starts keeps the count a count of calls rather than of log lines.
         toolCalls: message.payload.status === "running" ? state.toolCalls + 1 : state.toolCalls,
       };
+
+    case "capability.result":
+      // Kept as the latest result rather than accumulated. A table is the answer to the question
+      // just asked, and a stack of old ones is a stack of answers to questions nobody can still
+      // see - the tool log is where the history of what ran belongs.
+      //
+      // Held here and not yet drawn: rendering it is its own slice. Storing it now means the frame
+      // is not silently dropped in the meantime, and the panel can be pointed at it in one place.
+      return { ...state, lastResult: message.payload };
   }
 }
 

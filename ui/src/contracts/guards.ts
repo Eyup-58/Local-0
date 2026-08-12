@@ -81,6 +81,10 @@ function isString(value: unknown): value is string {
 }
 
 /** Prose that is either absent or actually says something. `""` is neither, so it is refused. */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 function isNullableProse(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && value.length > 0);
 }
@@ -338,6 +342,34 @@ function validatePayload(type: string, payload: unknown): string | null {
         // would paint a failed call green.
         return "tool.log status is unknown";
       }
+      return null;
+    }
+
+    case "capability.result": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["at", "capability", "columns", "rows", "truncated"])) {
+        return "capability.result payload has unexpected fields";
+      }
+      if (!isString(payload.at)) return "capability.result at is not a string";
+      if (!isString(payload.capability) || payload.capability.length === 0) {
+        return "capability.result capability is empty";
+      }
+      if (!isStringArray(payload.columns) || payload.columns.length === 0) {
+        return "capability.result columns are malformed";
+      }
+      if (!Array.isArray(payload.rows)) return "capability.result rows are not an array";
+
+      // Checked here as well as in the brain. A row that does not match the header draws every
+      // cell after it under the wrong heading, and a pid shown as a memory figure is worse than no
+      // table at all - so a malformed frame is refused rather than rendered crookedly.
+      for (const row of payload.rows) {
+        if (!isStringArray(row)) return "capability.result contains a row that is not strings";
+        if (row.length !== payload.columns.length) {
+          return "capability.result has a row whose width does not match its header";
+        }
+      }
+
+      if (typeof payload.truncated !== "boolean") return "capability.result truncated is not a boolean";
       return null;
     }
 

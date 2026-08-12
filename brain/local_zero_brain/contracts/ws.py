@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field, TypeAdapter, model_validator
 
 from local_zero_brain.contracts.common import (
     UUID_PATTERN,
@@ -414,6 +414,80 @@ class TurnRequest(ContractModel):
     payload: TurnRequestPayload
 
 
+#: How many rows one result may carry. Past this the handler truncates and says so, rather than
+#: sending a frame whose size depends on how many processes happen to be running.
+MAX_RESULT_ROWS = 200
+
+#: Header width. Four columns describe a process or a game comfortably; eight is room to be wrong
+#: about that without the frame growing without bound.
+MAX_RESULT_COLUMNS = 8
+
+
+class CapabilityResultPayload(ContractModel):
+    at: Timestamp
+    #: The registered capability name as the guard's step 1 knows it, not a name the model chose.
+    capability: Annotated[str, Field(min_length=1, max_length=120)]
+    #: Written by the handler. A model does not choose these either - it cannot, because it never
+    #: sees this message.
+    columns: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=40)]],
+        Field(min_length=1, max_length=MAX_RESULT_COLUMNS),
+    ]
+    #: Every cell a string, deliberately. These values come from outside the system - a process
+    #: name, a game title, a path - which makes them untrusted text by docs/SECURITY.md section 2.
+    #: Sending them as display text means nothing downstream computes with them, and the UI renders
+    #: them as text nodes rather than as markup.
+    rows: Annotated[
+        list[
+            Annotated[
+                list[Annotated[str, Field(max_length=256)]],
+                Field(min_length=1, max_length=MAX_RESULT_COLUMNS),
+            ]
+        ],
+        Field(max_length=MAX_RESULT_ROWS),
+    ]
+    #: True when rows were dropped to fit. Stated rather than inferred from a round-looking count:
+    #: a list silently cut at 200 is a lie about what is on the machine.
+    truncated: bool
+
+    @model_validator(mode="after")
+    def rows_match_the_header(self) -> CapabilityResultPayload:
+        """Every row is exactly as wide as the header.
+
+        JSON Schema draft 2020-12 cannot say "as long as that other array", so it bounds the shape
+        and this closes it. A ragged result is one the UI draws misaligned, which puts a value under
+        the wrong heading - a pid read as a memory figure is worse than no table at all.
+        """
+        width = len(self.columns)
+        for index, row in enumerate(self.rows):
+            if len(row) != width:
+                raise ValueError(
+                    f"row {index} has {len(row)} cells for {width} columns; a result whose rows do "
+                    "not match its header would be drawn against the wrong headings"
+                )
+
+        return self
+
+
+class CapabilityResult(ContractModel):
+    """brain -> ui. What a capability that reads something found.
+
+    Outbound only, absent from ``ClientMessage`` - the property ``turn.state`` and ``tool.log``
+    already hold. A tab that could send one could assert a result for an operation that never ran,
+    and a fabricated process list is a fabricated reason for the user to approve the next thing.
+
+    Separate from ``tool.log`` because they answer different questions: that one says a capability
+    finished, this one carries what it produced. A process list paraphrased into a 500-character
+    log line is a process list thrown away.
+    """
+
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["capability.result"]
+    payload: CapabilityResultPayload
+
+
 WsMessage = Annotated[
     ClientHello
     | ServerHello
@@ -432,7 +506,8 @@ WsMessage = Annotated[
     | MemoryReindex
     | TurnState
     | ToolLog
-    | TurnRequest,
+    | TurnRequest
+    | CapabilityResult,
     Field(discriminator="type"),
 ]
 

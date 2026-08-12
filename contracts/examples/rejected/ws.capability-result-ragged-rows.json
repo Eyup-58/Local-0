@@ -1,0 +1,17 @@
+{
+  "_why_rejected": "The second row carries three cells where the header declares four. The schema cannot express 'every row is exactly as long as columns', so it bounds the shape here and the brain's model enforces the rectangle before sending - but a row longer than the declared header is refusable at the schema, and it is refused. A ragged result is one the UI draws misaligned, which silently puts a value under the wrong heading: a pid read as a memory figure is worse than no table at all.",
+  "v": 1,
+  "id": "b41e7d02-5c93-4a18-8f70-2d6c9e415a3b",
+  "ts": "2026-08-13T00:41:19.204Z",
+  "type": "capability.result",
+  "payload": {
+    "at": "2026-08-13T00:41:19.204Z",
+    "capability": "list_processes",
+    "columns": ["name", "pid", "cpu_percent", "memory_mb"],
+    "rows": [
+      ["LocalZero.System", "10092", "0.4", "59"],
+      ["python", "14928", "1.1", "51", "extra", "cells", "beyond", "the", "header"]
+    ],
+    "truncated": false
+  }
+}

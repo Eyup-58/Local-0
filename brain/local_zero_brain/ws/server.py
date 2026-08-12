@@ -22,6 +22,7 @@ from local_zero_brain.capabilities.guard import Allowed, Denied, Guard, Invocati
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.capabilities.paths import workspace_root
 from local_zero_brain.capabilities.registry import Capability, CapabilityRegistry
+from local_zero_brain.capabilities.results import ResultTable
 from local_zero_brain.contracts.common import CONTRACT_VERSION
 from local_zero_brain.contracts.ws import (
     CLIENT_HELLO_ADAPTER,
@@ -524,7 +525,7 @@ async def _execute(services: BrainServices, capability: Capability, resolved_arg
     )
 
     try:
-        await asyncio.to_thread(capability.handler, **resolved_args)
+        produced = await asyncio.to_thread(capability.handler, **resolved_args)
     except Exception as error:  # noqa: BLE001 - a handler may raise anything; none of it may escape
         # An operation the user approved and which then failed is exactly the case this product must
         # not be silent about. Letting it propagate would tear down the socket and the UI would
@@ -551,6 +552,22 @@ async def _execute(services: BrainServices, capability: Capability, resolved_arg
         return
 
     finished = utc_now()
+
+    # A capability that read something says so before the run is closed out, so the table and the
+    # "Completed." line arrive in the order they happened. Handlers that return anything else -
+    # None from a write, a string from read_text_file - produce no result frame: this carries a
+    # table or nothing, rather than inventing a shape for whatever came back.
+    if isinstance(produced, ResultTable):
+        await services.hub.broadcast(
+            services.messages.capability_result(
+                at=finished,
+                capability=name,
+                columns=produced.columns,
+                rows=produced.rows,
+                truncated=produced.truncated,
+            )
+        )
+
     await services.hub.broadcast(
         services.messages.tool_log(at=finished, capability=name, message="Completed.", status="ok")
     )

@@ -236,6 +236,31 @@ export type ToolLog = Envelope<
 >;
 
 /**
+ * What a capability that reads something found.
+ *
+ * `tool.log` says a capability finished; this carries what it produced, because a process list or a
+ * game library is a table and paraphrasing one into a log line throws it away.
+ *
+ * **Every cell is a string and every cell is untrusted.** These values come from outside — a
+ * process name, a game title, a path someone else chose — so they are untrusted text by
+ * docs/SECURITY.md section 2. They are safe to display for exactly one reason: React renders them
+ * as text nodes and this repository imports no markdown or HTML renderer, which `bans.test.ts`
+ * keeps true. Nothing may treat a cell as an instruction, and nothing sends one back to the brain.
+ */
+export type CapabilityResult = Envelope<
+  "capability.result",
+  {
+    readonly at: string;
+    readonly capability: string;
+    readonly columns: readonly string[];
+    /** Every row is exactly `columns.length` long; the brain refuses a ragged table. */
+    readonly rows: readonly (readonly string[])[];
+    /** True when rows were dropped to fit. Reported, never inferred from `rows.length`. */
+    readonly truncated: boolean;
+  }
+>;
+
+/**
  * Something the user typed, on its way to the planner.
  *
  * The one message this tab sends whose payload reaches a language model, and the trusted half of
@@ -256,4 +281,5 @@ export type ServerMessage =
   | ProviderStatus
   | MemoryStatus
   | TurnState
-  | ToolLog;
+  | ToolLog
+  | CapabilityResult;
