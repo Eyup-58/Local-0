@@ -271,21 +271,67 @@ So trust follows **who wrote it**, recorded in each note's frontmatter, not wher
 
 Promotion from agent-written to trusted is a human moving a file. There is no API for it.
 
-Exit criteria:
+Exit criteria, with the evidence for each. Verified 2026-08-13.
 
-- [ ] A trusted note reaches the planner; an `UntrustedChunk` provably cannot — the type has no
-      conversion to `TrustedChunk` and a test asserts it
-- [ ] Agent-written memory lands in `LocalZero/` and is retrieved as untrusted, tested with
-      an injection fixture that reaches the Reader and produces no invocation
-- [ ] Vault writes go through **registered capabilities** with `allowed_roots` limited to
+- [x] A trusted note reaches the planner; an `UntrustedChunk` provably cannot — the type has no
+      conversion to `TrustedChunk` and a test asserts it — `test_injection.py::TestTheTwoTypes`. The
+      two types carry different field names on purpose, so `TrustedChunk(**vars(untrusted))` raises
+      rather than converting; `TestThePlanner` refuses a mixed list whole, one untrusted item in a
+      hundred trusted ones being still the exploit. The other half is asserted too:
+      `test_trusted_memory_reaches_the_planner_and_shapes_the_prompt`
+- [x] Agent-written memory lands in `LocalZero/` and is retrieved as untrusted, tested with
+      an injection fixture that reaches the Reader and produces no invocation — `TestTheRoundTrip`
+      and `test_a_poisoned_note_produces_no_invocation_through_the_guard`. The fixture note demands
+      `delete_file` on `config\SAM` and the stub provider obeys any instruction it is shown, so the
+      test would produce that invocation if untrusted text could reach the planner
+- [x] Vault writes go through **registered capabilities** with `allowed_roots` limited to
       `LocalZero/` and `Archive/`; every other vault path is on the guard's protected list,
-      with a test per path
-- [ ] Forgetting archives by default; permanent deletion is `destructive` and needs its own approval
-- [ ] Embeddings never leave the machine in either mode — test
-- [ ] Incremental reindex touches only changed files, **measured** rather than asserted
-- [ ] Missing vault, corrupt frontmatter, absent Ollama and a corrupt index each degrade rather than
-      crash: telemetry and approval keep working with memory switched off
-- [ ] `/threat-check` reports clean
+      with a test per path — `handlers.py:158-180` and `ws/server.py:205`. Every trusted folder is
+      parametrised at all three defences: containment, the protected list, and the subtree beneath
+      it. `TestTheProductionWiring` asks the application's own guard, so a list narrowed in
+      `create_app` cannot pass tests written against a hand-built one. Fixed in `acc0ba3`
+- [x] Forgetting archives by default; permanent deletion is `destructive` and needs its own approval
+      — `TestArchiving`, `TestForgetting`. `memory_forget` reaches only what is already archived, so
+      "forget that" cannot be unrecoverable on the first try, and it returns `Pending` with
+      `side_effect == "destructive"`
+- [x] Embeddings never leave the machine in either mode — test —
+      `TestEmbeddingsNeverLeaveTheMachine`, run in **Cloud** mode with egress permitted rather than
+      in Local mode where the guard would be the thing under test. Every address the embedding path
+      reached was `127.0.0.1`, and `GeminiProvider.embed` raises rather than exporting the vault
+- [x] Incremental reindex touches only changed files, **measured** rather than asserted —
+      `bench/reindex_incremental.py`, 2026-08-13: a 40-note vault, one note edited, warm pass
+      1 indexed / 39 skipped, 1.352 s → 0.039 s with embeddings on. Wall time rather than the
+      counter, because a counter reading one proves the counter, not that the second scan is cheaper
+- [x] Missing vault, corrupt frontmatter, absent Ollama and a corrupt index each degrade rather than
+      crash: telemetry and approval keep working with memory switched off — `TestWithoutAVault`,
+      `TestFrontmatter`, `test_a_provider_with_no_embedding_model_degrades_to_keyword_search`, and
+      `TestACorruptIndex` (9 cases) with the handshake case in `test_ws_server.py`. Fixed in
+      `bfb3791`
+- [x] `/threat-check` reports clean — run 2026-08-13 over the memory surface, all ten items covered,
+      no findings. Path canonicalisation is exercised against a real junction and a real symlink in
+      `test_paths.py` rather than argued for
+
+**2026-08-13 — the gate failed twice before it passed, both times on something absent rather than
+wrong.** `/gate M4.5` on 2026-08-12 returned FAIL on two criteria, and neither was visible from
+reading the code that implemented them.
+
+`MemoryIndex` never caught `sqlite3.DatabaseError`, and `status()` is called during the WebSocket
+handshake — before the frame reporting the turn state. So a corrupt cache did not degrade memory, it
+dropped the connection, and the tab reconnected into the same failure. Telemetry and approval use
+memory for nothing and went down with it. The fix is the rule this file already applied to a stale
+schema: the vault is the source of truth, so a cache that will not open is discarded and rebuilt
+rather than repaired.
+
+**The repair had its own Windows-shaped bug, found by testing it rather than by reading it.**
+Discarding the file from under a live connection cannot work — Windows will not unlink an open
+file — so corruption surfacing mid-query turned into a permanent memory-off on the only platform
+this product runs on. Closing before discarding is one line, and nothing but a test that provoked
+the case would have shown it was missing.
+
+The second failure was smaller and worse. `Projects`, `Knowledge` and `System` were protected in
+`create_app` and had been all along; what was missing was any test that said so. `Memory` was
+asserted, the other three were inherited by a fixture that built one folder, and a list that lost
+them would have stayed green — the whole reason the criterion asks for a test *per path*.
 
 **2026-08-12 — the panel was rebuilt as an orchestration centre.** Design imported from
 `claude.ai/design`; shipped in `f91f3ac` (contract) and `ceab545` (implementation).
