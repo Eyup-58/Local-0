@@ -287,6 +287,36 @@ Exit criteria:
       crash: telemetry and approval keep working with memory switched off
 - [ ] `/threat-check` reports clean
 
+**2026-08-12 — the panel was rebuilt as an orchestration centre.** Design imported from
+`claude.ai/design`; shipped in `f91f3ac` (contract) and `ceab545` (implementation).
+
+It sits in M4.5 rather than M5 because it adds no capability. What it adds is a way to *report* the
+ones that already exist: two brain → ui messages, `turn.state` and `tool.log` (`CONTRACTS.md` §4),
+so the panel can show what the brain is doing and what it ran without inferring either from elapsed
+time. The design as delivered assumed it could infer them — its demo sequence advanced turns nobody
+reported, its telemetry strip drew load from `Math.random()`, and its caption typed itself out one
+character at a time. None of that was ported: each invents a value, which is the one thing invariant
+10 exists to prevent. Extending the contract was the alternative to faking it, and that is the whole
+reason this slice touched `contracts/` at all.
+
+**The core stayed Canvas 2D.** The mockup drew it as a Three.js shader over ~11k points. This panel
+reports GPU utilization, so a WebGL loop behind that number would inflate the figure it draws — the
+one thing from the design that could not be taken at any price.
+
+- [x] Both message types are outbound only, absent from `ClientMessage`: a tab cannot assert a turn
+      that never happened or a tool call that never ran — `brain/tests/test_turn_state.py`
+- [x] A null caption renders as nothing; empty prose is refused at the contract so silence has one
+      spelling — `rejected/ws.turn-state-empty-caption.json`
+- [x] Fonts vendored to `ui/public/fonts`, so the panel renders identically with no network at all
+      and `bans.test.ts` still refuses a CDN reference
+- [x] 35/35 contract expectations, 381 brain, 155 ui; driven in Chromium against contract-shaped
+      frames with no console errors
+
+**Not yet emitted: `listening`, `thinking`, `speaking`.** `server.py` is the only emitter and
+capability execution is the only lifecycle it hooks, so today the core only ever shows `idle` and
+`tool_running`. The contract and the UI both carry all five. Wiring the other three belongs with the
+planner and provider paths, not here.
+
 ---
 
 ## M5 — OS operations and game scanning
