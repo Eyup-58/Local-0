@@ -47,3 +47,7 @@ dist/
 .idea/
 Thumbs.db
 desktop.ini
+
+# Another tool's local database, left in this working tree. Not ours, and one `git add -A` away
+# from being committed by accident.
+.freebuff/

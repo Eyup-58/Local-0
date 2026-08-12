@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "b21e7a44-0c3f-4d81-9a6b-58e0d7c14293",
+  "ts": "2026-08-12T18:24:02.107Z",
+  "type": "turn.state",
+  "payload": {
+    "state": "listening",
+    "since": "2026-08-12T18:24:02.107Z",
+    "caption": null,
+    "detail": null
+  }
+}

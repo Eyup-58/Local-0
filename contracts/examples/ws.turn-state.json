@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "4f8b1c05-6d92-4a37-b0e5-71c8a29d3f6e",
+  "ts": "2026-08-12T18:24:11.418Z",
+  "type": "turn.state",
+  "payload": {
+    "state": "speaking",
+    "since": "2026-08-12T18:24:11.418Z",
+    "caption": "The vault has 41 notes indexed. Nothing outside it was read.",
+    "detail": "memory.search"
+  }
+}

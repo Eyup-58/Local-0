@@ -493,6 +493,27 @@ from *the button was on* would not be a record of what happened.
 The log is written before execution for allowed invocations, so a crash mid-operation still leaves
 a record.
 
+### `tool.log` is a view onto this, not a second copy of it
+
+The `tool.log` message added for the orchestration-centre panel reports capability runs to the UI as
+they happen. It is **not** the audit record and must never be treated as one: it is capped in the
+tab, it starts empty on every reconnect, and a UI that was not connected never learns what it missed.
+The file above is the complete record, and the panel says so in as many words rather than presenting
+an empty list as "nothing has run".
+
+Its `message` field is prose describing what ran, and it **may paraphrase content the brain
+fetched** — which makes it untrusted text under §2, arriving on the one path that ends at a human
+reading it. Two rules follow, and neither is expressible in a schema:
+
+1. **It is rendered as text, never as markup.** No markdown or HTML renderer is imported on this
+   path and `dangerouslySetInnerHTML` is banned repository-wide; `ui/src/bans.test.ts` fails the
+   build over either. That is the same control protecting the approval dialog, and it is the reason
+   a paraphrase of a fetched page is safe to put on screen at all.
+2. **It never travels back inbound.** `tool.log` is absent from `ClientMessage`, so it cannot arrive
+   from a tab, and nothing routes it into the planner. A summary of an instruction is still an
+   instruction (§2), so a log line describing a page that asked to be trusted must not become
+   context for the component that proposes operations.
+
 ---
 
 ## 10. Deliberately out of scope

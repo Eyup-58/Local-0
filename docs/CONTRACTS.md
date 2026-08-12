@@ -253,6 +253,48 @@ was considered and declined: null is what an accidental empty submit produces, a
 a stored credential is not something a stray frame should be able to do. Until there is a message
 that says so explicitly, removal is done in Windows' own Credential Manager.
 
+### `turn.state` — brain → ui
+
+Carries `state`, `since`, `caption` and `detail`. `state` is one of `idle`, `listening`, `thinking`,
+`tool_running`, `speaking`.
+
+**Reported, never inferred.** The UI has no timer that advances this and no elapsed-time heuristic
+that guesses the next one. If the brain stops sending `turn.state` the core holds the last state it
+was told about, which is the honest thing for it to do — a panel that decided for itself that the
+brain was "probably speaking by now" would be narrating.
+
+`caption` is what the brain is saying, in its own words, or `null` when it has nothing to say. Null
+is a gap and the UI renders it as one: no greeting, no status line, no filler substituted for
+silence. Empty prose is refused rather than accepted as a second spelling of the same thing —
+`rejected/ws.turn-state-empty-caption.json` holds that line, because a blank caption renders as a
+blank line the user cannot tell apart from a caption that failed to arrive. `detail` is a short
+label for what the turn is about, under the same rule.
+
+`ws.turn-state-silent.json` is the valid example of the quiet case: `listening`, both prose fields
+null.
+
+### `tool.log` — brain → ui
+
+Carries `at`, `capability`, `message` and `status`. `status` is one of `running`, `ok`, `failed`;
+`running` is **not terminal** and nothing may conclude a turn on the strength of it.
+
+One message per event, appended as it happens, rather than a replayed array. A UI that reconnects
+has missed what it missed, and re-sending history would let it draw a log it never actually
+observed. What fell off the end belongs to the audit log, which is the record that is supposed to be
+complete.
+
+An unknown `status` is refused rather than bucketed into the nearest-looking one:
+`rejected/ws.tool-log-unknown-status.json` holds that line, because the nearest-looking one is `ok`
+and that would paint a failed call green.
+
+**`message` may paraphrase content the brain fetched, which makes it untrusted text** under
+`SECURITY.md` §2. It is safe to display because it is rendered as text and never routed back into
+the planner — see `SECURITY.md` §9.
+
+Neither message is in `ClientMessage`: a tab that could send `turn.state` could paint any state it
+liked onto the core, and one that could send `tool.log` could write lines into the record of what
+ran. `brain/tests/test_turn_state.py` holds that line.
+
 ---
 
 ## 5. Versioning
@@ -323,6 +365,24 @@ handling rule rather than a schema rule — a schema cannot express "do not writ
 stated here, in `SECURITY.md` §11, and in the schema's own description, and enforced in the brain by
 the frame never reaching the audit log or an error message.
 
+**2026-08-12 — two more, for the orchestration-centre panel:** `turn.state` and `tool.log`, both
+brain → ui. `ipc.schema.json` is untouched a fourth time: the sidecar has no part in a conversational
+turn either.
+
+Additive, so `v` stays 1, and the same constraint shaped the design a third time — the current turn
+is its own message rather than a field on `server.hello`, because `additionalProperties: false` makes
+adding that field breaking.
+
+Both are **outbound only**. They are deliberately absent from `ClientMessage`, which is the narrowed
+inbound union: the UI holds no authority, and a tab able to originate either one could assert a turn
+that never happened or a tool call that never ran. That is the same reasoning that keeps
+`approval.request` out of the inbound union.
+
+`tool.log.message` is the first field in this contract that may legitimately carry text derived from
+content the brain fetched. Like `credential.set`, the rule that matters is a handling rule the schema
+cannot express — display as text, never route to the planner — so it is stated here, in
+`SECURITY.md` §9, and in the schema's own description.
+
 ---
 
 ## 6. Change procedure
@@ -369,6 +429,8 @@ from an assertion into a test:
 | `ws.credential-set-empty.json` | An empty key is refused where the mistake is, not later as an authentication failure |
 | `ws.provider-status-carrying-the-key.json` | The key cannot ride back to the UI inside a status message |
 | `ws.memory-reindex-with-a-path.json` | The UI cannot choose a directory for the brain to walk and index |
+| `ws.turn-state-empty-caption.json` | Silence is spelled `null`; an empty caption cannot become a blank line indistinguishable from one that failed to arrive |
+| `ws.tool-log-unknown-status.json` | An unreadable status fails rather than rounding to the nearest, which would paint a failed call green |
 
 One valid example is worth naming for the same reason: `ws.approval-request-untrusted.json` is a
 **valid** message whose `content` argument carries `<img src=x onerror=alert(1)>` and an instruction
@@ -381,7 +443,7 @@ message definition matching the `type` field before validating — otherwise the
 collapses every failure into "not valid under any of the given schemas", which cannot distinguish a
 message rejected for the intended reason from one rejected by accident.
 
-Current state, verified 2026-08-12: **30/30 expectations hold** (20 valid, 10 rejected).
+Current state, verified 2026-08-12: **35/35 expectations hold** (23 valid, 12 rejected).
 
 ---
 

@@ -521,6 +521,79 @@
       },
       "required": ["v", "id", "ts", "type", "payload"],
       "additionalProperties": false
+    },
+
+    "turnState": {
+      "description": "What the brain is doing in the current conversational turn. REPORTED, never inferred by the UI from elapsed time: the UI has no timer that advances this and no default that fills it in. Before the first turn.state frame the UI shows idle with no caption, which is the state that claims the least.",
+      "type": "string",
+      "enum": ["idle", "listening", "thinking", "tool_running", "speaking"]
+    },
+    "turnStateMessage": {
+      "description": "brain -> ui. The conversational turn state, sent whenever it changes. Its own message rather than a field on server.hello for the same reason as trust.status: additionalProperties is false everywhere, so growing an existing payload is a breaking change - see docs/CONTRACTS.md section 5.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "turn.state" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "state": { "$ref": "#/$defs/turnState" },
+            "since": { "$ref": "#/$defs/timestamp" },
+            "caption": {
+              "description": "What the brain is saying, in its own words, or null when it has nothing to say. Null is a gap and the UI renders it as one - it does not substitute a greeting, a status line, or filler for a turn that produced no speech. Rendered as text; the UI has no markdown or HTML renderer and a repository test holds that.",
+              "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 2000 }, { "type": "null" }]
+            },
+            "detail": {
+              "description": "A short label for what the state is about - the capability being run, the device being listened on - or null. Same rule as caption: null renders as nothing.",
+              "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 120 }, { "type": "null" }]
+            }
+          },
+          "required": ["state", "since", "caption", "detail"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "toolLogMessage": {
+      "description": "brain -> ui. One line of the tool log, appended as it happens. One message per event rather than a replayed array: a UI that reconnects has missed what it missed, and pretending otherwise by re-sending history would let it draw a log it never actually observed.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "tool.log" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "at": { "$ref": "#/$defs/timestamp" },
+            "capability": {
+              "description": "The registered capability name, as the guard's step 1 knows it. Not a description of intent and not a name the model chose.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "message": {
+              "description": "User-safe prose describing what ran. MAY paraphrase content the brain fetched, which makes it untrusted text by docs/SECURITY.md section 2 - it is safe to display because it is rendered as text and never reaches the planner, and it must never be treated as an instruction by anything that reads it.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "status": {
+              "description": "running is not a terminal state; the UI must not report a turn as finished on the strength of it.",
+              "type": "string",
+              "enum": ["running", "ok", "failed"]
+            }
+          },
+          "required": ["at", "capability", "message", "status"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
     }
   },
 
@@ -539,6 +612,8 @@
     { "$ref": "#/$defs/providerSelectMessage" },
     { "$ref": "#/$defs/credentialSetMessage" },
     { "$ref": "#/$defs/memoryStatusMessage" },
-    { "$ref": "#/$defs/memoryReindexMessage" }
+    { "$ref": "#/$defs/memoryReindexMessage" },
+    { "$ref": "#/$defs/turnStateMessage" },
+    { "$ref": "#/$defs/toolLogMessage" }
   ]
 }

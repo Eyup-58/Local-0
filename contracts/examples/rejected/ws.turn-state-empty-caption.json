@@ -1,0 +1,13 @@
+{
+  "_why_rejected": "caption is an empty string. Having nothing to say is spelled null, which the UI renders as a gap; an empty string is a caption that exists and says nothing, and it would render as a blank line the user cannot distinguish from a caption that failed to arrive. minLength 1 forces the two cases apart.",
+  "v": 1,
+  "id": "d3a6f218-9e70-4c15-b8d2-6407ae91c53f",
+  "ts": "2026-08-12T18:24:11.418Z",
+  "type": "turn.state",
+  "payload": {
+    "state": "speaking",
+    "since": "2026-08-12T18:24:11.418Z",
+    "caption": "",
+    "detail": null
+  }
+}

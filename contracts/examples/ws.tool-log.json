@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "7c5d9e30-2b81-4f6a-8d47-c0193fa5be82",
+  "ts": "2026-08-12T18:24:07.556Z",
+  "type": "tool.log",
+  "payload": {
+    "at": "2026-08-12T18:24:07.556Z",
+    "capability": "memory.search",
+    "message": "Searched the vault for charter notes. 3 chunks matched, all from notes the user wrote.",
+    "status": "ok"
+  }
+}

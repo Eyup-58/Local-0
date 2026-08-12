@@ -1,0 +1,13 @@
+{
+  "_why_rejected": "status is 'done'. The enum is running, ok or failed. A status the UI cannot interpret must fail rather than be bucketed into the nearest-looking one, because the nearest-looking one here is 'ok' and that would paint a failed tool call green.",
+  "v": 1,
+  "id": "e08c4b76-1d53-4a29-9f60-2b7c85d1e34a",
+  "ts": "2026-08-12T18:24:07.556Z",
+  "type": "tool.log",
+  "payload": {
+    "at": "2026-08-12T18:24:07.556Z",
+    "capability": "memory.search",
+    "message": "Searched the vault for charter notes.",
+    "status": "done"
+  }
+}
