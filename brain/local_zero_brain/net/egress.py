@@ -10,12 +10,24 @@ including transitive dependencies. That is why the patch sits on ``socket.socket
 than on a client wrapper: a dependency that opens its own socket goes through this method too, and
 a guard installed any higher would simply not see it.
 
+``sendto`` is patched for the same reason and was originally missed. A UDP datagram never calls
+``connect`` - it carries its destination as an argument and leaves from an unconnected socket - so a
+guard covering only the connection methods left a whole protocol outside a boundary this module's
+own docstring described as total. ``sendmsg`` would need the same treatment and does not exist on
+Windows, which is the only platform this product runs on.
+
 **What it does not enforce:** *which* remote host is reached in Cloud mode. By the time ``connect``
 runs, name resolution has already happened and the guard is handed an address. The Gemini endpoint
 is anycast and its addresses rotate, so a hostname allowlist here is not a thing that can be
 honoured. Pinning the host is the provider client's job, and the audit trail exists precisely
 because that is not enforcement: a departure nobody intended is recorded even where it was not
 prevented.
+
+**It also does not enforce name resolution.** ``getaddrinfo`` runs in the C library against the
+system resolver and is not a ``socket.socket`` operation, so a lookup for a remote name departs even
+in Local mode - the connection that follows is refused, but the hostname was already sent. The
+payload never leaves; the fact that something was looked up does. docs/SECURITY.md section 11 states
+this as the one exception to Local mode's guarantee rather than leaving it implied.
 
 Windows Firewall rules would enforce the host properly and are unavailable - creating them needs
 elevation, which red line 11 forbids outright.
@@ -68,7 +80,7 @@ class EgressGuard:
     capture the patched method as its "original", so ``create_app`` builds exactly one.
     """
 
-    __slots__ = ("_audit", "_mode", "_connect", "_connect_ex", "_lock")
+    __slots__ = ("_audit", "_mode", "_connect", "_connect_ex", "_sendto", "_lock")
 
     def __init__(self, *, audit: AuditLog, mode: EgressMode = "local") -> None:
         self._audit = audit
@@ -78,6 +90,7 @@ class EgressGuard:
         self._mode: EgressMode = mode
         self._connect = socket.socket.connect
         self._connect_ex = socket.socket.connect_ex
+        self._sendto = socket.socket.sendto
         self._lock = threading.Lock()
 
     @property
@@ -109,14 +122,25 @@ class EgressGuard:
 
             return guard._connect_ex(sock, address)
 
+        def sendto(sock: socket.socket, data: Any, *rest: Any) -> int:
+            # sendto(data, address) and sendto(data, flags, address). The destination is the last
+            # argument in both forms, so the arity is read rather than assumed - understanding only
+            # the two-argument call would leave a bypass that costs an attacker one extra `0`.
+            if rest:
+                guard.require_permitted(rest[-1])
+
+            return guard._sendto(sock, data, *rest)
+
         with self._lock:
             socket.socket.connect = connect  # type: ignore[method-assign]
             socket.socket.connect_ex = connect_ex  # type: ignore[method-assign]
+            socket.socket.sendto = sendto  # type: ignore[method-assign]
 
     def uninstall(self) -> None:
         with self._lock:
             socket.socket.connect = self._connect  # type: ignore[method-assign]
             socket.socket.connect_ex = self._connect_ex  # type: ignore[method-assign]
+            socket.socket.sendto = self._sendto  # type: ignore[method-assign]
 
     def require_permitted(self, address: Any) -> None:
         """Raises ``EgressBlocked`` unless this destination is allowed in the current mode."""

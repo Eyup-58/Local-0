@@ -301,6 +301,44 @@ class CredentialSet(ContractModel):
     payload: CredentialSetPayload
 
 
+class MemoryStatusPayload(ContractModel):
+    #: False when no vault is configured, or the configured one is not there. An ordinary state:
+    #: nothing else in the product depends on memory.
+    enabled: bool
+    vault: str | None
+    notes: Annotated[int, Field(ge=0)]
+    chunks: Annotated[int, Field(ge=0)]
+    embedded_chunks: Annotated[int, Field(ge=0)]
+    last_indexed_at: Timestamp | None
+    #: False means keyword-only ranking. Reported rather than inferred - search that quietly gets
+    #: worse is the failure nobody notices.
+    embeddings_available: bool
+
+
+class MemoryStatus(ContractModel):
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["memory.status"]
+    payload: MemoryStatusPayload
+
+
+class MemoryReindexPayload(ContractModel):
+    """Empty, deliberately.
+
+    A vault path arriving from the UI would be a directory to walk, read and index, chosen by the
+    least authoritative component on this socket. The vault is the configured one.
+    """
+
+
+class MemoryReindex(ContractModel):
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["memory.reindex"]
+    payload: MemoryReindexPayload
+
+
 WsMessage = Annotated[
     ClientHello
     | ServerHello
@@ -314,7 +352,9 @@ WsMessage = Annotated[
     | TrustSet
     | ProviderStatus
     | ProviderSelect
-    | CredentialSet,
+    | CredentialSet
+    | MemoryStatus
+    | MemoryReindex,
     Field(discriminator="type"),
 ]
 
@@ -324,7 +364,7 @@ WS_MESSAGE_ADAPTER: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 #: cannot construct a capability invocation. Accepting the full union inbound would let a browser tab
 #: send the brain a server.hello, or raise its own approval.request and then answer it.
 ClientMessage = Annotated[
-    ClientHello | ApprovalDecision | TrustSet | ProviderSelect | CredentialSet,
+    ClientHello | ApprovalDecision | TrustSet | ProviderSelect | CredentialSet | MemoryReindex,
     Field(discriminator="type"),
 ]
 

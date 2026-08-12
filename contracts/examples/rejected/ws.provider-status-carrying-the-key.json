@@ -1,5 +1,5 @@
 {
-  "_why_rejected": "the payload carries a 'key' field. provider.status reports whether a key is stored and never what it is - not the value, not a prefix, not its length. additionalProperties false is what stops a well-meaning change from adding it later, and this file is what stops that change from being made quietly.",
+  "_why_rejected": "the payload carries a 'key' field. provider.status reports whether a key is stored and never what it is - not the value, not a prefix, not its length. additionalProperties false is what stops a well-meaning change from adding it later, and this file is what stops that change from being made quietly. the value below is deliberately not shaped like a vendor key: a fixture wearing a real prefix is one every secret scanner flags for the life of the repository, and an allowlist entry is a worse answer than a string nobody could mistake for a key.",
   "v": 1,
   "id": "3f6b1a48-8e07-42d5-91c3-a2b70de49517",
   "ts": "2026-08-12T18:31:20.006Z",
@@ -8,7 +8,7 @@
     "mode": "cloud",
     "model": "gemini-2.0-flash",
     "has_key": true,
-    "key": "AIzaSy-would-be-a-real-key-here",
+    "key": "fake-key-would-be-a-real-key-here",
     "since": "2026-08-12T18:31:20.006Z"
   }
 }

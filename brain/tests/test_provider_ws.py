@@ -78,10 +78,15 @@ def client(tmp_path: Path, audit_path: Path) -> Iterator[TestClient]:
     store.delete()
 
 
+#: server.hello, then the three state messages the UI must not be wrong about: whether approval is
+#: on, where the network boundary is, and whether memory is loaded.
+OPENING_FRAMES = 4
+
+
 def handshake(socket) -> list[dict]:
-    """Completes the handshake and returns the three frames the brain opens with."""
+    """Completes the handshake and returns the frames the brain opens with."""
     socket.send_text(json.dumps(CLIENT_HELLO))
-    return [socket.receive_json() for _ in range(3)]
+    return [socket.receive_json() for _ in range(OPENING_FRAMES)]
 
 
 def test_the_handshake_reports_the_boundary_before_anything_else_happens(client: TestClient) -> None:
@@ -90,7 +95,12 @@ def test_the_handshake_reports_the_boundary_before_anything_else_happens(client:
     with client, client.websocket_connect("/ws") as socket:
         frames = handshake(socket)
 
-    assert [frame["type"] for frame in frames] == ["server.hello", "trust.status", "provider.status"]
+    assert [frame["type"] for frame in frames] == [
+        "server.hello",
+        "trust.status",
+        "provider.status",
+        "memory.status",
+    ]
     assert frames[2]["payload"]["mode"] == "local"
     assert frames[2]["payload"]["has_key"] is False
 
@@ -220,3 +230,31 @@ def test_an_empty_key_is_refused_by_the_contract(client: TestClient) -> None:
     assert reply["type"] == "error"
     assert reply["payload"]["code"] == "schema_violation"
     assert CredentialStore(target=TEST_TARGET).has_key() is False
+
+
+def test_selecting_cloud_does_not_move_the_embedding_provider(client: TestClient) -> None:
+    """docs/SECURITY.md section 11: embeddings are local in **both** modes.
+
+    The half of that rule this test covers is the wiring. ``GeminiProvider.embed`` raising protects
+    against the vault being exported; it does not protect against the index being handed the cloud
+    provider and memory silently dying the moment the user flips the switch. What makes the rule
+    structural is that ``create_app`` builds the index with the local provider and there is no code
+    path in which the selected mode reaches that constructor argument.
+
+    The behaviour behind it - that the local provider aims at loopback and only loopback while
+    outbound is permitted - is asserted in test_memory_index.py::TestEmbeddingsNeverLeaveTheMachine.
+    """
+    with client, client.websocket_connect("/ws") as socket:
+        handshake(socket)
+        before = client.app.state.services.memory.index.provider
+
+        socket.send_text(envelope("credential.set", {"key": KEY}))
+        socket.receive_json()
+        socket.send_text(envelope("provider.select", {"mode": "cloud"}))
+        socket.receive_json()
+
+        after = client.app.state.services.memory.index.provider
+
+    assert client.app.state.services.egress.mode == "cloud"
+    assert after is before
+    assert after.name == "ollama"

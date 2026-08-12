@@ -257,6 +257,38 @@ function validatePayload(type: string, payload: unknown): string | null {
       return null;
     }
 
+    case "memory.status": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (
+        !hasExactKeys(payload, [
+          "enabled",
+          "vault",
+          "notes",
+          "chunks",
+          "embedded_chunks",
+          "last_indexed_at",
+          "embeddings_available",
+        ])
+      ) {
+        return "memory.status payload has unexpected fields";
+      }
+      if (typeof payload.enabled !== "boolean") return "memory.status enabled is not a boolean";
+      if (payload.vault !== null && !isString(payload.vault)) return "memory.status vault is malformed";
+      for (const field of ["notes", "chunks", "embedded_chunks"] as const) {
+        const value = payload[field];
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+          return `memory.status ${field} is not a count`;
+        }
+      }
+      if (payload.last_indexed_at !== null && !isString(payload.last_indexed_at)) {
+        return "memory.status last_indexed_at is malformed";
+      }
+      if (typeof payload.embeddings_available !== "boolean") {
+        return "memory.status embeddings_available is not a boolean";
+      }
+      return null;
+    }
+
     default:
       return `unknown message type '${type}'`;
   }

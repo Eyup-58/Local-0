@@ -521,7 +521,7 @@ explicit decision of the user: Selectable Hybrid.**
 
 | Mode | Egress permitted | Key |
 |---|---|---|
-| **Local** (default) | **Loopback only.** Nothing leaves the machine. | none |
+| **Local** (default) | **Loopback only.** No payload leaves the machine — with one exception, DNS, documented below. | none |
 | **Cloud (Gemini)** | Loopback, plus outbound to the Gemini endpoint | supplied by the user |
 
 **Local is the default on a fresh install**, so the state before anybody chooses anything is the one
@@ -541,12 +541,40 @@ the socket layer is not a thing that can be honoured.
 
 | Mechanism | Enforces | Does **not** enforce |
 |---|---|---|
-| Socket guard, installed at startup | Loopback-only vs loopback-plus-outbound, process-wide, against **any** library including transitive dependencies | *Which* remote host is reached |
+| Socket guard, installed at startup | Loopback-only vs loopback-plus-outbound, process-wide, against **any** library including transitive dependencies | *Which* remote host is reached; **name resolution**, which happens below it |
 | The provider client | One pinned base URL, TLS, no cross-host redirect | Anything a different library does |
-| Audit of every non-loopback connect | That egress is **visible** | That it was prevented |
+| Audit of every non-loopback departure | That egress is **visible** | That it was prevented |
 
-**In Local mode the first mechanism is total**: nothing non-loopback connects, whatever attempts it.
-That is the mode with a hard guarantee.
+The guard patches `connect`, `connect_ex` **and `sendto`**. The last one is there because a UDP
+datagram never calls `connect` — it carries its destination as an argument and leaves from an
+unconnected socket — so a guard covering only the connection methods would have left a whole
+protocol outside a boundary this section called total. It was missing until the M4 gate; `sendmsg`
+would need the same and does not exist on Windows.
+
+**In Local mode the first mechanism is total for the traffic Local Zero sends**: nothing non-loopback
+connects and no datagram leaves, whatever attempts it. That is the mode with a hard guarantee, and
+the paragraph below is the one thing that guarantee does not cover.
+
+### What still leaves in Local mode: DNS
+
+A socket-layer guard sees an address, which means the name was already resolved before it was
+consulted. `getaddrinfo` runs in the C library against the system resolver — it is not a Python
+socket operation and no patch on `socket.socket` observes it.
+
+So a connection attempt to `example.com` in Local mode is refused, and the **hostname has already
+been sent to the configured DNS server** by the time that refusal happens. The payload never
+departs; the fact that something was looked up does.
+
+This is stated rather than fixed, and the reason is the same one that rules out a host allowlist:
+preventing it needs either a firewall rule (elevation — red line 11) or a resolver Local Zero
+controls, which is a DNS client written for a product whose own network path is one loopback call.
+The exposure is bounded by what the product actually resolves: in Local mode nothing in Local Zero
+looks up a remote name at all, so a lookup happening in that mode means a dependency did something
+unexpected — which is worth knowing rather than worth hiding behind a sentence claiming nothing
+leaves.
+
+**Written down because the alternative is a document that reads as a stronger promise than the code
+keeps.** "Nothing leaves this machine" was that stronger promise, and it was not true.
 
 **In Cloud mode the host restriction rests on the second mechanism**, which constrains the code we
 wrote and nothing else. The third exists precisely because the second is not enforcement: an egress

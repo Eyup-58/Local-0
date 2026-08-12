@@ -27,6 +27,7 @@ from local_zero_brain.contracts.ws import (
     CLIENT_MESSAGE_ADAPTER,
     ApprovalDecision,
     CredentialSet,
+    MemoryReindex,
     ProviderSelect,
     TrustSet,
 )
@@ -38,6 +39,7 @@ from local_zero_brain.llm.ollama import DEFAULT_MODEL as LOCAL_MODEL, OllamaProv
 from local_zero_brain.llm.gemini import DEFAULT_MODEL as CLOUD_MODEL
 from local_zero_brain.memory.index import MemoryIndex
 from local_zero_brain.memory.manager import MemoryManager
+from local_zero_brain.memory.vault import TRUSTED_FOLDERS
 from local_zero_brain.net.egress import EgressGuard
 from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
@@ -146,8 +148,13 @@ def create_app(
         log=log,
     )
 
+    # The trusted half of the vault is unreachable to every capability, whatever its allowed_roots
+    # says. A capability that could write there could author the user's own memories, and they would
+    # come back next session as text the planner is allowed to act on.
+    protected_memory = tuple(memory.root / folder for folder in TRUSTED_FOLDERS) if memory.root else ()
+
     guard = Guard(
-        registry=build_registry(root),
+        registry=build_registry(root, vault=memory.root),
         workspace=root,
         audit=audit,
         trust=trust,
@@ -157,7 +164,7 @@ def create_app(
         # contain them. provider.json belongs here for the same reason trust.json does: a capability
         # that could write it could move the egress boundary into Cloud mode, and the boundary would
         # then be something the system can open for itself.
-        protected_paths=(trust.path, providers.path, memory.index.path),
+        protected_paths=(trust.path, providers.path, memory.index.path, *protected_memory),
     )
 
     services = BrainServices(
@@ -299,8 +306,23 @@ async def _complete_handshake(websocket: WebSocket, services: BrainServices) -> 
     # For the same reason as trust: a tab that does not yet know the boundary is open would show the
     # safe state while the permissive one is in force.
     await websocket.send_json(_provider_frame(services))
+    await websocket.send_json(_memory_frame(services))
 
     return True
+
+
+def _memory_frame(services: BrainServices) -> dict[str, Any]:
+    status = services.memory.status()
+
+    return services.messages.memory_status(
+        enabled=status.enabled,
+        vault=status.vault,
+        notes=status.notes,
+        chunks=status.chunks,
+        embedded_chunks=status.embedded_chunks,
+        last_indexed_at=status.last_indexed_at,
+        embeddings_available=status.embeddings_available,
+    )
 
 
 def _provider_frame(services: BrainServices) -> dict[str, Any]:
@@ -335,7 +357,8 @@ async def _handle_ui_frame(websocket: WebSocket, services: BrainServices, frame:
             services.messages.error(
                 code="schema_violation",
                 message="The UI may not send this message. Only client.hello, approval.decision, "
-                "trust.set, provider.select and credential.set are accepted on this socket.",
+                "trust.set, provider.select, credential.set and memory.reindex are accepted on "
+                "this socket.",
             )
         )
         _ = error
@@ -355,6 +378,10 @@ async def _handle_ui_frame(websocket: WebSocket, services: BrainServices, frame:
 
     if isinstance(message, CredentialSet):
         await _apply_credential(services, message)
+        return
+
+    if isinstance(message, MemoryReindex):
+        await _rescan_memory(services)
         return
 
     # A second client.hello on an established connection.
@@ -471,6 +498,17 @@ async def _apply_credential(services: BrainServices, message: CredentialSet) -> 
     """
     services.credentials.write(Secret(message.payload.key))
     await services.hub.broadcast(_provider_frame(services))
+
+
+async def _rescan_memory(services: BrainServices) -> None:
+    """Rescans the configured vault and tells every tab the new counts.
+
+    On a worker thread: a scan walks the vault and embeds what changed, and doing that on the event
+    loop would stall the telemetry stream for as long as it takes. Memory is the part of this
+    product that may be slow; the panel is not.
+    """
+    await asyncio.to_thread(services.memory.reindex)
+    await services.hub.broadcast(_memory_frame(services))
 
 
 async def _close_with_error(websocket: WebSocket, services: BrainServices, *, code: Any, message: str) -> None:

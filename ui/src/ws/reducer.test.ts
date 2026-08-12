@@ -196,7 +196,10 @@ describe("the network boundary", () => {
 
     const state = frame(before, {
       ...providerStatus,
-      payload: { ...(providerStatus.payload as object), key: "AIzaSy-should-never-arrive" },
+      // Not shaped like a vendor key. A fixture wearing a real prefix is a fixture every secret
+      // scanner flags for the life of the repository, and an allowlist entry is a worse answer than
+      // a string that could never be mistaken for a key in the first place.
+      payload: { ...(providerStatus.payload as object), key: "fake-key-should-never-arrive" },
     });
 
     expect(state.providerMode).toBe(before.providerMode);

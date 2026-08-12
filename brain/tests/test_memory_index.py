@@ -14,12 +14,18 @@ nobody notices.
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import pytest
 
+from local_zero_brain.audit import AuditLog
+from local_zero_brain.credentials import Secret
+from local_zero_brain.llm.gemini import GeminiProvider
+from local_zero_brain.llm.ollama import OllamaProvider
 from local_zero_brain.memory.chunks import TrustedChunk, UntrustedChunk
 from local_zero_brain.memory.index import MemoryIndex
+from local_zero_brain.net.egress import EgressGuard
 
 TRUSTED_NOTE = """---
 type: preference
@@ -265,6 +271,82 @@ class TestEmbeddings:
         assert index.search_trusted("panels")
         assert any("embed" in line.lower() for line in logged)
 
+    def test_a_note_is_recalled_by_meaning_when_no_word_matches(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """The point of having embeddings at all.
+
+        Found by running it against the real model: with recall bounded by the keyword pass, asking
+        for "GPU" returned nothing while a note said "graphics card" - which is keyword search with
+        an extra step, not semantic search. The vector pass has to be able to find a chunk the
+        keyword pass never nominated.
+        """
+
+        class Synonyms(StubEmbedder):
+            """Maps two different words onto the same direction, which is what an embedding does."""
+
+            def embed(self, texts) -> list[list[float]]:
+                return [
+                    [1.0, 0.0] if ("graphics" in text.lower() or "gpu" in text.lower()) else [0.0, 1.0]
+                    for text in texts
+                ]
+
+        (vault / "Memory" / "card.md").write_text(
+            "# Graphics card\n\nI use an RX 7800 XT.", encoding="utf-8"
+        )
+        index = MemoryIndex(tmp_path / "memory.sqlite", provider=Synonyms())
+        index.reindex(vault)
+
+        assert [chunk for chunk in index.search_trusted("GPU") if "card.md" in chunk.note_path]
+
+    def test_an_unrelated_question_recalls_nothing_even_with_embeddings_on(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """A vector scan always has a nearest neighbour, so without a floor everything is a hit.
+
+        Measured against the real model before this was added: asking about submarines returned both
+        notes in a two-note vault, and that text would have gone into the prompt. Recall that always
+        returns something is recall that means nothing.
+        """
+
+        class Orthogonal(StubEmbedder):
+            """Three directions: graphics, interface, and everything else.
+
+            A two-direction stub would put the unrelated query on top of whichever note was not
+            about graphics, and the test would fail for a reason that has nothing to do with the
+            floor.
+            """
+
+            def embed(self, texts) -> list[list[float]]:
+                vectors = []
+                for text in texts:
+                    lowered = text.lower()
+                    if "graphics" in lowered:
+                        vectors.append([1.0, 0.0, 0.0])
+                    elif "panel" in lowered or "interface" in lowered:
+                        vectors.append([0.0, 1.0, 0.0])
+                    else:
+                        vectors.append([0.0, 0.0, 1.0])
+
+                return vectors
+
+        (vault / "Memory" / "card.md").write_text("# Graphics card\n\nan RX 7800 XT", encoding="utf-8")
+        index = MemoryIndex(tmp_path / "memory.sqlite", provider=Orthogonal())
+        index.reindex(vault)
+
+        assert index.status().embeddings_available is True
+        assert index.search_trusted("submarines") == []
+
+    def test_keyword_only_recall_does_not_invent_matches(self, index: MemoryIndex, vault: Path) -> None:
+        """The other side of it: without embeddings, a word that is not there finds nothing.
+
+        Without this, the test above could pass because search had quietly become "return
+        everything".
+        """
+        index.reindex(vault)
+
+        assert index.search_trusted("submarine") == []
+
     def test_the_failure_is_reported_once_rather_than_per_chunk(
         self, tmp_path: Path, vault: Path
     ) -> None:
@@ -276,3 +358,64 @@ class TestEmbeddings:
         index.reindex(vault)
 
         assert len([line for line in logged if "embed" in line.lower()]) == 1
+
+
+class TestEmbeddingsNeverLeaveTheMachine:
+    """docs/SECURITY.md section 11: embeddings are local in **both** modes.
+
+    Indexing the vault means embedding its entire contents, so an embedding call that crossed the
+    network would ship the user's own notes to a provider one chunk at a time - a bulk export
+    arriving as a side effect of a switch the user flipped to get a better answer to one question.
+
+    Cloud mode is the mode under test throughout, and deliberately so. Asserting this in Local mode
+    would prove nothing: the egress guard blocks everything non-loopback there anyway, so a test
+    that passed would be measuring the guard rather than the rule. In Cloud mode the door is open
+    and a departure would be permitted and merely recorded - which makes "the vault's contents did
+    not go anywhere" a statement about where the code aims rather than about what stopped it.
+    """
+
+    def test_indexing_a_vault_in_cloud_mode_reaches_loopback_and_nothing_else(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """The whole vault is indexed with outbound permitted, and every address touched is local.
+
+        The underlying connect is replaced, so this needs no model server and makes no real
+        request; what is captured is the destination the embedding path aimed at.
+
+        ``_connect`` is restored **by hand, before ``uninstall``**, and not with ``monkeypatch``.
+        The guard's saved original and the function its patch delegates to are the same attribute,
+        so a teardown that runs after ``uninstall`` restores the stub onto ``socket.socket`` and
+        leaves it there for every test that follows. Written out because it cost a full-suite
+        failure that looked like the guard's bug rather than this test's.
+        """
+        attempted: list[tuple[str, int]] = []
+        audit = AuditLog(tmp_path / "audit.jsonl")
+        guard = EgressGuard(audit=audit, mode="cloud")
+
+        def record_and_refuse(sock: socket.socket, address: object) -> None:
+            attempted.append(address)  # type: ignore[arg-type]
+            raise ConnectionRefusedError("no server in this test")
+
+        original = guard._connect
+        guard._connect = record_and_refuse  # type: ignore[assignment]
+        guard.install()
+        try:
+            MemoryIndex(tmp_path / "memory.sqlite", provider=OllamaProvider()).reindex(vault)
+        finally:
+            guard._connect = original  # type: ignore[assignment]
+            guard.uninstall()
+
+        assert attempted, "the embedding path made no request at all, so this proves nothing"
+        assert all(host == "127.0.0.1" for host, _ in attempted)
+        # Cloud mode records every departure. No file means there was nothing to record.
+        assert not audit.path.exists()
+
+    def test_the_cloud_provider_cannot_embed_at_all(self) -> None:
+        """The rule is code rather than convention.
+
+        ``GeminiProvider.embed`` raising is what makes the test above hold for a caller that wires
+        the selected chat provider into the index by mistake: the mistake fails loudly instead of
+        exporting the vault.
+        """
+        with pytest.raises(NotImplementedError):
+            GeminiProvider(key=Secret("local-zero-test-value-1111111111111111")).embed(["a note"])

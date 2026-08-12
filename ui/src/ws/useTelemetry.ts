@@ -56,6 +56,8 @@ export interface Telemetry {
    * only acknowledgement is a provider.status carrying has_key.
    */
   readonly setKey: (key: string) => void;
+  /** Asks the brain to rescan the configured vault. It carries no path; the UI does not choose one. */
+  readonly reindexMemory: () => void;
 }
 
 export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
@@ -131,5 +133,6 @@ export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
     setTrust: (enabled) => send("trust.set", { enabled }),
     selectProvider: (mode) => send("provider.select", { mode }),
     setKey: (key) => send("credential.set", { key }),
+    reindexMemory: () => send("memory.reindex", {}),
   };
 }

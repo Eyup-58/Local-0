@@ -230,6 +230,24 @@ field on send and never renders the value back.
 An empty key is refused at the schema (`minLength: 1`). Accepting one would store it, report
 `has_key: true`, and then fail as an authentication error somewhere with nothing pointing back here.
 
+### `memory.status` — brain → ui, and `memory.reindex` — ui → brain
+
+`memory.status` carries `enabled`, `vault`, `notes`, `chunks`, `embedded_chunks`, `last_indexed_at`
+and `embeddings_available`. `memory.reindex` carries nothing.
+
+Memory being **off** is an ordinary state — no vault configured, or a renamed folder — and
+`enabled: false` says so with the counts at zero, rather than the UI showing an empty vault as
+though it had indexed one.
+
+`embeddings_available: false` means search is ranking by keyword alone because no embedding model
+answered. It is reported rather than inferred: search that quietly gets worse is the failure nobody
+notices.
+
+**`memory.reindex` carries no path, and that is the point.** A vault to scan, arriving from the UI,
+would be a directory to walk, read and index chosen by the least authoritative component on the
+socket. The vault is the configured one.
+`rejected/ws.memory-reindex-with-a-path.json` holds that line.
+
 **OPEN QUESTION — removing a stored key is not in this contract.** A `key: null` meaning "forget it"
 was considered and declined: null is what an accidental empty submit produces, and silently clearing
 a stored credential is not something a stray frame should be able to do. Until there is a message
@@ -296,6 +314,10 @@ Additive again, so `v` stays 1, and the same constraint shaped the design a seco
 mode is carried by its own `provider.status` message rather than by a field on `server.hello`,
 because `additionalProperties: false` makes adding that field breaking.
 
+**2026-08-12, M4.5 — two more:** `memory.status` (brain → ui) and `memory.reindex` (ui → brain), for
+the memory panel. Additive again, `v` stays 1, and `ipc.schema.json` is untouched: the sidecar has no
+part in memory either.
+
 `credential.set` is the first message in this contract whose payload must never be logged. That is a
 handling rule rather than a schema rule — a schema cannot express "do not write this down" — so it is
 stated here, in `SECURITY.md` §11, and in the schema's own description, and enforced in the brain by
@@ -346,6 +368,7 @@ from an assertion into a test:
 | `ws.approval-nested-args.json` | `resolved_args` values stay scalar, so markup cannot re-enter the payload the user reads to decide |
 | `ws.credential-set-empty.json` | An empty key is refused where the mistake is, not later as an authentication failure |
 | `ws.provider-status-carrying-the-key.json` | The key cannot ride back to the UI inside a status message |
+| `ws.memory-reindex-with-a-path.json` | The UI cannot choose a directory for the brain to walk and index |
 
 One valid example is worth naming for the same reason: `ws.approval-request-untrusted.json` is a
 **valid** message whose `content` argument carries `<img src=x onerror=alert(1)>` and an instruction
@@ -358,7 +381,7 @@ message definition matching the `type` field before validating — otherwise the
 collapses every failure into "not valid under any of the given schemas", which cannot distinguish a
 message rejected for the intended reason from one rejected by accident.
 
-Current state, verified 2026-08-12: **27/27 expectations hold** (18 valid, 9 rejected).
+Current state, verified 2026-08-12: **30/30 expectations hold** (20 valid, 10 rejected).
 
 ---
 

@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "id": "9a52d3f8-1c47-4e60-b38d-27f0e5a41c96",
+  "ts": "2026-08-12T19:02:00.000Z",
+  "type": "memory.status",
+  "payload": {
+    "enabled": true,
+    "vault": "E:\\Obsidian\\CaseLocal0\\Local 0",
+    "notes": 2,
+    "chunks": 2,
+    "embedded_chunks": 2,
+    "last_indexed_at": "2026-08-12T19:01:58.220Z",
+    "embeddings_available": true
+  }
+}

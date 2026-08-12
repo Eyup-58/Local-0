@@ -1,0 +1,10 @@
+{
+  "_why_rejected": "the payload names a vault to scan. memory.reindex carries nothing on purpose: the vault is the configured one, and a path arriving from the UI would be a path the UI chose - a directory to walk, read and index, selected by the least authoritative component on the socket. additionalProperties false is what keeps that from being added later as a convenience.",
+  "v": 1,
+  "id": "e81f5a24-9037-4b6c-a2d5-70c1938ef4b6",
+  "ts": "2026-08-12T19:02:31.447Z",
+  "type": "memory.reindex",
+  "payload": {
+    "vault": "C:\\Users\\someone\\Documents"
+  }
+}

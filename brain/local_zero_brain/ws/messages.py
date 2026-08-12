@@ -135,6 +135,30 @@ class WsMessageFactory:
             "provider.status", {"mode": mode, "model": model, "has_key": has_key, "since": since}
         )
 
+    def memory_status(
+        self,
+        *,
+        enabled: bool,
+        vault: str | None,
+        notes: int,
+        chunks: int,
+        embedded_chunks: int,
+        last_indexed_at: str | None,
+        embeddings_available: bool,
+    ) -> dict[str, Any]:
+        return self._envelope(
+            "memory.status",
+            {
+                "enabled": enabled,
+                "vault": vault,
+                "notes": notes,
+                "chunks": chunks,
+                "embedded_chunks": embedded_chunks,
+                "last_indexed_at": last_indexed_at,
+                "embeddings_available": embeddings_available,
+            },
+        )
+
     def error(self, *, code: WsErrorCode, message: str, in_reply_to: str | None = None) -> dict[str, Any]:
         return self._envelope(
             "error",

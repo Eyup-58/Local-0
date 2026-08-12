@@ -175,6 +175,24 @@ export type ProviderStatus = Envelope<
   }
 >;
 
+export type MemoryStatus = Envelope<
+  "memory.status",
+  {
+    /** False when no vault is configured, or the configured one is not there. An ordinary state. */
+    readonly enabled: boolean;
+    readonly vault: string | null;
+    readonly notes: number;
+    readonly chunks: number;
+    readonly embedded_chunks: number;
+    readonly last_indexed_at: string | null;
+    /**
+     * False means search is ranking by keyword alone because no embedding model answered.
+     * Reported rather than inferred — search that quietly gets worse is the failure nobody notices.
+     */
+    readonly embeddings_available: boolean;
+  }
+>;
+
 /** Everything the brain may send to the UI. */
 export type ServerMessage =
   | ServerHello
@@ -184,4 +202,5 @@ export type ServerMessage =
   | ApprovalRequest
   | ApprovalResolved
   | TrustStatus
-  | ProviderStatus;
+  | ProviderStatus
+  | MemoryStatus;

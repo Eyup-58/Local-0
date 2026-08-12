@@ -122,6 +122,7 @@ def handshake(socket) -> None:
     assert socket.receive_json()["type"] == "server.hello"
     assert socket.receive_json()["type"] == "trust.status"
     assert socket.receive_json()["type"] == "provider.status"
+    assert socket.receive_json()["type"] == "memory.status"
 
 
 async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -> None:

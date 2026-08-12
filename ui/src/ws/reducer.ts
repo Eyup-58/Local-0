@@ -7,7 +7,13 @@
  */
 
 import { parseServerMessage } from "../contracts/guards";
-import type { ApprovalRequest, ProviderMode, SensorCapability, TelemetryPayload } from "../contracts/types";
+import type {
+  ApprovalRequest,
+  MemoryStatus,
+  ProviderMode,
+  SensorCapability,
+  TelemetryPayload,
+} from "../contracts/types";
 
 export type LinkState = "connecting" | "open" | "closed";
 
@@ -50,6 +56,8 @@ export interface TelemetryState {
   readonly providerModel: string;
   /** Whether a cloud key is stored. The key itself never reaches this state, or any other. */
   readonly hasKey: boolean;
+  /** What the brain has loaded from the vault. `enabled: false` means memory is off, not empty. */
+  readonly memory: MemoryStatus["payload"];
 }
 
 export const initialState: TelemetryState = {
@@ -73,6 +81,17 @@ export const initialState: TelemetryState = {
   providerMode: "local",
   providerModel: "",
   hasKey: false,
+  // Off until the brain says otherwise, like everything else here. A panel claiming memory is
+  // loaded before hearing from the brain would be inventing the one number nobody can check.
+  memory: {
+    enabled: false,
+    vault: null,
+    notes: 0,
+    chunks: 0,
+    embedded_chunks: 0,
+    last_indexed_at: null,
+    embeddings_available: false,
+  },
 };
 
 export type TelemetryAction =
@@ -162,6 +181,9 @@ function applyFrame(state: TelemetryState, raw: string, now: number): TelemetryS
         providerModel: message.payload.model,
         hasKey: message.payload.has_key,
       };
+
+    case "memory.status":
+      return { ...state, memory: message.payload };
   }
 }
 

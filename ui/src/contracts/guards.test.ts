@@ -48,6 +48,7 @@ describe("contract examples", () => {
     // The one in this list that matters most: a UI willing to *receive* a credential.set would be a
     // UI that could be handed a key by anything that reached the socket.
     "ws.credential-set.json",
+    "ws.memory-reindex.json",
   ];
 
   it.each(valid.filter((name) => !uiSent.includes(name)))("accepts %s", (name) => {

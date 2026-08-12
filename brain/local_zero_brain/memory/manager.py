@@ -87,6 +87,11 @@ class MemoryManager:
         return self._root is not None
 
     @property
+    def root(self) -> Path | None:
+        """The vault, for the caller that has to register capabilities against it."""
+        return self._root
+
+    @property
     def index(self) -> MemoryIndex:
         return self._index
 

@@ -49,6 +49,11 @@ SKIPPED_DIRECTORIES = frozenset({".obsidian", ".trash", ".git"})
 #: Long enough to hold a section, short enough that several fit in a prompt budget.
 MAX_CHUNK_CHARS = 1200
 
+#: Statuses that take a note out of recall without taking it out of the vault. Anything else -
+#: including a typo - reads as active: hiding a memory the user wrote because they misspelled a
+#: frontmatter value would lose it to a spelling mistake.
+RETIRED_STATUSES = frozenset({"superseded", "archived"})
+
 Trust = Literal["trusted", "untrusted"]
 
 _FENCE = "---"
@@ -81,6 +86,16 @@ class NoteMetadata:
     @property
     def note_type(self) -> str | None:
         return self.fields.get("type")
+
+    @property
+    def supersedes(self) -> str | None:
+        """A vault-relative path this note retires.
+
+        Declarative rather than inferred: the user writes which note this replaces, and the index
+        stops recalling that one. Working it out from the text would be a guess that silently
+        removes memories.
+        """
+        return self.fields.get("supersedes")
 
 
 def vault_root() -> Path | None:

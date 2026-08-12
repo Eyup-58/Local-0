@@ -33,23 +33,64 @@ from pathlib import Path
 
 from local_zero_brain.llm.provider import Provider
 from local_zero_brain.memory.chunks import TrustedChunk, UntrustedChunk
-from local_zero_brain.memory.vault import chunk_body, iter_notes, parse_note, trust_of
+from local_zero_brain.memory.vault import RETIRED_STATUSES, chunk_body, iter_notes, parse_note, trust_of
 
 MEMORY_FILE_NAME = "memory.sqlite"
 
 DEFAULT_LIMIT = 5
 
-#: How many keyword candidates are reranked when embeddings are available.
+#: How many candidates each pass contributes before fusion.
 CANDIDATE_POOL = 50
 
+#: The usual reciprocal-rank-fusion constant. It damps the influence of the very top rank so one
+#: pass cannot dominate the other on a single confident hit.
+_RRF_K = 60
+
+#: How close a chunk must be before the vector pass will offer it.
+#:
+#: A scan always has a nearest neighbour, so without a floor every question recalls something -
+#: measured: asking about submarines returned both notes in a two-note vault, and that text would
+#: have gone into the prompt. Measured with `nomic-embed-text` on 2026-08-12:
+#:
+#:     graphics card -> card.md   0.790      submarine        -> editor.md  0.414
+#:     video card    -> card.md   0.747      quantum chromo.  -> card.md    0.421
+#:     GPU           -> card.md   0.721      the price of tea -> card.md    0.405
+#:     dark theme    -> editor.md 0.563      recipe for bread -> card.md    0.375
+#:     my screen     -> editor.md 0.502      submarine        -> card.md    0.337
+#:
+#: Genuine hits bottom out at 0.50; unrelated questions top out at 0.42. 0.45 sits between them with
+#: margin on both sides. **It is specific to this embedding model** - an index built with a
+#: different one is not comparable anyway, and this number would need measuring again.
+VECTOR_FLOOR = 0.45
+
 _TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+#: Bumped whenever the tables change. The file is a derived cache, so a mismatch is answered by
+#: rebuilding it from the vault rather than by migration code - there is nothing in here that the
+#: vault does not already hold, and migrations for a cache are a maintenance cost with no payoff.
+SCHEMA_VERSION = 2
+
+#: A word has to be at least this long to count towards two notes being about the same thing.
+#: Shorter ones are mostly grammar, and grammar overlaps everywhere.
+MIN_TOKEN_LENGTH = 4
+
+#: How many significant words two notes must share before they are worth a human's attention.
+MIN_SHARED_TOKENS = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS notes (
     path       TEXT PRIMARY KEY,
     mtime      REAL NOT NULL,
     size       INTEGER NOT NULL,
-    indexed_at TEXT NOT NULL
+    indexed_at TEXT NOT NULL,
+    trusted    INTEGER NOT NULL DEFAULT 0,
+    -- What the note's own frontmatter says. Kept separate from `superseded` below, which is derived
+    -- from *other* notes: merging them would mean recomputing the derived one clobbers the
+    -- declared one, and a note the user marked superseded would quietly come back.
+    status     TEXT NOT NULL DEFAULT 'active',
+    superseded INTEGER NOT NULL DEFAULT 0,
+    note_type  TEXT,
+    supersedes TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -57,7 +98,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     path       TEXT NOT NULL,
     heading    TEXT,
     text       TEXT NOT NULL,
-    trusted    INTEGER NOT NULL,
     written_at TEXT NOT NULL,
     embedding  BLOB
 );
@@ -65,6 +105,12 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS chunks_by_path ON chunks (path);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text);
+"""
+
+_DROP = """
+DROP TABLE IF EXISTS chunks_fts;
+DROP TABLE IF EXISTS chunks;
+DROP TABLE IF EXISTS notes;
 """
 
 
@@ -139,6 +185,16 @@ class MemoryIndex:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def provider(self) -> Provider | None:
+        """Whatever computes the vectors. Exposed so the wiring can be asserted rather than assumed.
+
+        docs/SECURITY.md section 11 requires this to be the local provider in **both** modes, and
+        that is a property of how ``create_app`` builds the index - not of anything this class does.
+        Without a reader for it, the rule can only be checked by reading the constructor call.
+        """
+        return self._provider
+
     # --- writing ---------------------------------------------------------------------------------
 
     def reindex(self, root: Path) -> ReindexReport:
@@ -173,7 +229,30 @@ class MemoryIndex:
                 self._forget_note(connection, gone)
                 removed += 1
 
+            self._apply_supersedes(connection)
+
         return ReindexReport(indexed=indexed, skipped=skipped, removed=removed)
+
+    def _apply_supersedes(self, connection: sqlite3.Connection) -> None:
+        """Retires the notes that other notes have replaced.
+
+        Run over the whole index rather than per note, because the retiring note and the retired one
+        are indexed independently and either order is possible.
+
+        **Only a trusted note may retire anything.** Superseding removes a memory from recall, so an
+        agent-written note able to do it could quietly retire whatever the user wrote that stood in
+        its way - achieving by deletion what it is not permitted to achieve by instruction. A
+        dangling reference is ignored: vaults get reorganised, and that is not a reason to fail a
+        scan.
+        """
+        connection.execute("UPDATE notes SET superseded = 0")
+
+        for (target,) in connection.execute(
+            "SELECT supersedes FROM notes "
+            "WHERE supersedes IS NOT NULL AND trusted = 1 AND status NOT IN (?, ?)",
+            tuple(sorted(RETIRED_STATUSES)),
+        ).fetchall():
+            connection.execute("UPDATE notes SET superseded = 1 WHERE path = ?", (target,))
 
     def _index_note(
         self,
@@ -203,19 +282,29 @@ class MemoryIndex:
 
         for (heading, chunk_text), vector in zip(pieces, vectors, strict=True):
             cursor = connection.execute(
-                "INSERT INTO chunks (path, heading, text, trusted, written_at, embedding) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (relative, heading, chunk_text, 1 if trust == "trusted" else 0, written_at, vector),
+                "INSERT INTO chunks (path, heading, text, written_at, embedding) VALUES (?, ?, ?, ?, ?)",
+                (relative, heading, chunk_text, written_at, vector),
             )
             connection.execute(
                 "INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)", (cursor.lastrowid, chunk_text)
             )
 
         connection.execute(
-            "INSERT INTO notes (path, mtime, size, indexed_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO notes (path, mtime, size, indexed_at, trusted, status, note_type, supersedes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, "
-            "indexed_at = excluded.indexed_at",
-            (relative, mtime, size, _now()),
+            "indexed_at = excluded.indexed_at, trusted = excluded.trusted, status = excluded.status, "
+            "note_type = excluded.note_type, supersedes = excluded.supersedes",
+            (
+                relative,
+                mtime,
+                size,
+                _now(),
+                1 if trust == "trusted" else 0,
+                metadata.status or "active",
+                metadata.note_type,
+                metadata.supersedes,
+            ),
         )
 
     def _forget_note(self, connection: sqlite3.Connection, relative: str) -> None:
@@ -258,7 +347,71 @@ class MemoryIndex:
             embeddings_available=self._embeddings_available,
         )
 
+    def conflict_candidates(self, note_path: str) -> list[str]:
+        """Other live notes of the same kind that appear to be about the same thing.
+
+        **Candidates, not verdicts.** Deciding which of two contradictory notes is true is a
+        judgement, and a keyword heuristic making that judgement silently would be worse than making
+        none - it would delete one of the user's memories on the strength of word overlap. Nothing
+        here changes any note's status; the caller shows a human.
+
+        Retired notes are excluded: a correction that already superseded something is not a
+        contradiction, and reporting it would make every correction look like one.
+        """
+        retired = tuple(sorted(RETIRED_STATUSES))
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT note_type, trusted FROM notes WHERE path = ? AND superseded = 0 "
+                f"AND status NOT IN ({', '.join('?' * len(retired))})",
+                (note_path, *retired),
+            ).fetchone()
+
+            if row is None:
+                return []
+
+            note_type, trusted = row
+            mine = _significant_tokens(self._text_of(connection, note_path))
+
+            others = connection.execute(
+                "SELECT path FROM notes WHERE path != ? AND trusted = ? AND superseded = 0 "
+                f"AND status NOT IN ({', '.join('?' * len(retired))}) "
+                "AND note_type IS ? ",
+                (note_path, trusted, *retired, note_type),
+            ).fetchall()
+
+            return [
+                path
+                for (path,) in others
+                if len(mine & _significant_tokens(self._text_of(connection, path))) >= MIN_SHARED_TOKENS
+            ]
+
+    def _text_of(self, connection: sqlite3.Connection, note_path: str) -> str:
+        rows = connection.execute("SELECT text FROM chunks WHERE path = ?", (note_path,)).fetchall()
+        return "\n".join(row[0] for row in rows)
+
     def _search(self, query: str, *, trusted: int, limit: int) -> list[tuple]:
+        """Keyword hits and vector hits, fused.
+
+        The two passes answer different questions and neither subsumes the other. Keyword search
+        finds the note that uses your words; vector search finds the note that means what you meant.
+        Reranking keyword hits alone - the first shape of this code - could only ever reorder what
+        the words already found, which showed up immediately against a real model: asking for "GPU"
+        returned nothing while a note said "graphics card".
+
+        The vector pass is a full scan of this trust level. For a personal vault that is a few
+        megabytes of floats and a few milliseconds; if a vault ever grows enough for that to matter,
+        this is where an approximate index would go.
+        """
+        keyword = self._keyword_rows(query, trusted=trusted, limit=limit)
+
+        if not self._embeddings_available:
+            return keyword
+
+        vector = self._vector_rows(query, trusted=trusted, limit=limit)
+        return _fuse(keyword, vector)[:limit]
+
+    def _keyword_rows(self, query: str, *, trusted: int, limit: int) -> list[tuple]:
         expression = _match_expression(query)
         if expression is None:
             # An empty query matching everything would turn "recall" into "inject the whole vault".
@@ -269,34 +422,39 @@ class MemoryIndex:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT c.path, c.heading, c.text, c.written_at, c.embedding "
-                "FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "
-                "WHERE chunks_fts MATCH ? AND c.trusted = ? "
+                "FROM chunks_fts f JOIN chunks c ON c.id = f.rowid JOIN notes n ON n.path = c.path "
+                # A retired memory stays in the vault and stays out of recall: asking about the
+                # present gets the present, and nothing was destroyed to make that true.
+                f"WHERE chunks_fts MATCH ? AND n.trusted = ? AND n.superseded = 0 "
+                f"AND n.status NOT IN ({', '.join('?' * len(RETIRED_STATUSES))}) "
                 "ORDER BY bm25(chunks_fts) LIMIT ?",
-                (expression, trusted, pool),
+                (expression, trusted, *sorted(RETIRED_STATUSES), pool),
             ).fetchall()
 
-        if not self._embeddings_available or not rows:
-            return rows[:limit]
+        return rows[:pool]
 
-        return self._rerank(query, rows)[:limit]
-
-    def _rerank(self, query: str, rows: Sequence[tuple]) -> list[tuple]:
-        """Reorders keyword hits by vector similarity.
-
-        Deliberately a rerank rather than a scan of every chunk: recall stays bounded by what the
-        keyword pass found, which is the honest limitation to state rather than to imply otherwise.
-        A full vector scan is the upgrade if the vault ever grows enough for that to matter.
-        """
+    def _vector_rows(self, query: str, *, trusted: int, limit: int) -> list[tuple]:
+        """The chunks closest in meaning, whatever words they used."""
         vectors = self._embed([query])
         if vectors[0] is None:
-            return list(rows)
+            return []
 
         target = _to_floats(vectors[0])
+        retired = tuple(sorted(RETIRED_STATUSES))
 
-        def score(row: tuple) -> float:
-            return -_cosine(target, _to_floats(row[4])) if row[4] is not None else 0.0
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT c.path, c.heading, c.text, c.written_at, c.embedding "
+                "FROM chunks c JOIN notes n ON n.path = c.path "
+                "WHERE c.embedding IS NOT NULL AND n.trusted = ? AND n.superseded = 0 "
+                f"AND n.status NOT IN ({', '.join('?' * len(retired))})",
+                (trusted, *retired),
+            ).fetchall()
 
-        return sorted(rows, key=score)
+        near = [(row, _cosine(target, _to_floats(row[4]))) for row in rows]
+        near = [(row, score) for row, score in near if score >= VECTOR_FLOOR]
+
+        return [row for row, _ in sorted(near, key=lambda pair: -pair[1])][: max(limit, CANDIDATE_POOL)]
 
     # --- embeddings ------------------------------------------------------------------------------
 
@@ -328,7 +486,16 @@ class MemoryIndex:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(self._path)
             with connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if version and version != SCHEMA_VERSION:
+                    # A cache from an older shape. Everything in it came from the vault, so the
+                    # cheapest correct answer is to throw it away and rescan.
+                    self._log(f"memory index schema {version} is stale; rebuilding from the vault")
+                    connection.executescript(_DROP)
+
                 connection.executescript(_SCHEMA)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
             connection.close()
             self._schema_ready = True
 
@@ -346,6 +513,34 @@ def _match_expression(query: str) -> str | None:
         return None
 
     return " OR ".join(f'"{token}"' for token in tokens)
+
+
+def _fuse(*rankings: Sequence[tuple]) -> list[tuple]:
+    """Reciprocal rank fusion over the keyword and vector rankings.
+
+    Ranks rather than scores, because bm25 and cosine are not on the same scale and normalising them
+    into one would mean inventing a weighting nobody measured. A chunk near the top of either list
+    surfaces; a chunk near the top of both surfaces higher.
+    """
+    scores: dict[str, float] = {}
+    rows: dict[str, tuple] = {}
+
+    for ranking in rankings:
+        for rank, row in enumerate(ranking):
+            key = f"{row[0]}\x00{row[2]}"
+            rows[key] = row
+            scores[key] = scores.get(key, 0.0) + 1.0 / (_RRF_K + rank)
+
+    return [rows[key] for key in sorted(scores, key=lambda key: -scores[key])]
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Words long enough to be about something.
+
+    A length floor rather than a stopword list: a list is a thing that is always missing the word
+    this vault happens to use, and the floor costs nothing to maintain.
+    """
+    return {token.lower() for token in _TOKEN.findall(text) if len(token) >= MIN_TOKEN_LENGTH}
 
 
 def _to_floats(blob: bytes) -> array:

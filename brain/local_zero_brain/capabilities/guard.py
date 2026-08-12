@@ -243,20 +243,25 @@ class Guard:
         )
 
     def _refuse_protected(self, affected_paths: tuple[Path, ...]) -> Denied | None:
-        """Local Zero's own control files are out of reach for every capability.
+        """Local Zero's own control files, and the trusted half of memory, are out of reach.
 
         Containment already keeps them out while roots stay narrow. This holds the line when a
         capability legitimately declares a root wide enough to contain one - which is what M5 is
         for. A capability that could write the trust file could turn approval off, and then approval
-        would not be there to stop it.
+        would not be there to stop it; a capability that could write the vault's trusted folders
+        could author the user's own memories.
+
+        **A protected entry covers its subtree.** An exact-path list cannot express "this folder and
+        everything in it", and the vault's trusted folders are directories. ``is_relative_to``
+        answers both cases: a file is inside itself.
         """
         for path in affected_paths:
-            if any(path == protected for protected in self._protected):
+            if any(_is_inside(path, protected) for protected in self._protected):
                 return Denied(
                     "protected_path",
                     "denied_guard",
-                    "the path is one of Local Zero's own control files, which no capability may "
-                    "touch whatever its allowed_roots permits",
+                    "the path is one of Local Zero's own control files or a trusted memory folder, "
+                    "which no capability may touch whatever its allowed_roots permits",
                 )
 
         return None

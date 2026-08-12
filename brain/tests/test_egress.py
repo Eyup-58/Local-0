@@ -8,9 +8,10 @@ than implied.
 
 Two properties carry the guarantee:
 
-* the patch sits on ``socket.socket.connect`` and ``connect_ex``, which is the floor every library
-  reaches eventually - a guard installed one layer higher would be routed around by the first
-  dependency that opens its own socket;
+* the patch sits on ``socket.socket.connect``, ``connect_ex`` and ``sendto``, which is the floor
+  every library reaches eventually - a guard installed one layer higher would be routed around by
+  the first dependency that opens its own socket, and one covering only the connection methods is
+  routed around by any datagram;
 * an address the guard cannot interpret is refused in Local mode. A hostname, an unexpected address
   family, a malformed tuple: none of those is a reason to guess in the permissive direction.
 """
@@ -30,6 +31,10 @@ from local_zero_brain.net.egress import EgressBlocked, EgressGuard
 #: Reserved for documentation (RFC 5737). Nothing here ever tries to reach it - every test that
 #: names it expects to be stopped before a packet exists.
 OFF_MACHINE = ("203.0.113.7", 443)
+
+#: Every socket method the guard replaces. ``sendmsg`` is absent on Windows, which is why the list
+#: is written down rather than derived.
+GUARDED_METHODS = ("connect", "connect_ex", "sendto")
 
 
 @pytest.fixture
@@ -108,6 +113,49 @@ def test_connect_ex_is_guarded_too(guard: EgressGuard) -> None:
     """
     with socket.socket() as client:
         assert client.connect_ex(OFF_MACHINE) == errno.EACCES
+
+
+def test_a_datagram_off_the_machine_is_refused(guard: EgressGuard) -> None:
+    """UDP never calls connect, so a guard covering only connect leaves this route wide open.
+
+    ``sendto`` carries its destination as an argument, which is the whole point: the socket is
+    unconnected and the packet leaves anyway. Found by checking which methods ``install`` actually
+    replaces rather than by reading the docstring that said "total".
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client, pytest.raises(EgressBlocked):
+        client.sendto(b"leaving", OFF_MACHINE)
+
+
+def test_a_datagram_sent_with_flags_is_refused_too(guard: EgressGuard) -> None:
+    """``sendto`` has two arities and the address is the last argument in both.
+
+    A guard that only understood the two-argument form would be bypassed by adding a ``0``.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client, pytest.raises(EgressBlocked):
+        client.sendto(b"leaving", 0, OFF_MACHINE)
+
+
+def test_a_refused_datagram_is_recorded(guard: EgressGuard, audit: AuditLog) -> None:
+    """Same record as a refused connection. An attempt nobody can see is an attempt nobody counts."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client, pytest.raises(EgressBlocked):
+        client.sendto(b"leaving", OFF_MACHINE)
+
+    assert "blocked" in audit.path.read_text(encoding="utf-8")
+
+
+def test_loopback_datagrams_are_still_delivered(guard: EgressGuard) -> None:
+    """The guard must not break the local path, so this asserts arrival rather than absence of error."""
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver.bind(("127.0.0.1", 0))
+    receiver.settimeout(1)
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            sender.sendto(b"ping", receiver.getsockname())
+
+        assert receiver.recv(4) == b"ping"
+    finally:
+        receiver.close()
 
 
 def test_ipv6_loopback_is_loopback(guard: EgressGuard) -> None:
@@ -208,3 +256,19 @@ def test_uninstalling_restores_the_original_socket(audit: AuditLog, listener: tu
 
     with socket.socket() as client:
         client.connect(listener)
+
+
+def test_uninstalling_restores_every_method_it_patched(audit: AuditLog) -> None:
+    """Named one by one, so a method added to ``install`` and forgotten in ``uninstall`` fails here.
+
+    A patch left behind outlives the guard that owns it and applies to whatever runs next.
+    """
+    before = {name: getattr(socket.socket, name) for name in GUARDED_METHODS}
+
+    installed = EgressGuard(audit=audit)
+    installed.install()
+    patched = {name: getattr(socket.socket, name) for name in GUARDED_METHODS}
+    installed.uninstall()
+
+    assert all(patched[name] is not before[name] for name in GUARDED_METHODS)
+    assert {name: getattr(socket.socket, name) for name in GUARDED_METHODS} == before
