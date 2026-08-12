@@ -13,6 +13,7 @@ import { DeclaredGaps } from "./components/DeclaredGaps";
 import { Gauge } from "./components/Gauge";
 import { LinkStatus } from "./components/LinkStatus";
 import { Metric } from "./components/Metric";
+import { ProviderControl } from "./components/ProviderControl";
 import { TrustControl } from "./components/TrustControl";
 import { formatGibibytes, formatMegahertz, formatPercent, formatUptime, fraction } from "./format";
 import type { SensorCapability } from "./contracts/types";
@@ -32,7 +33,7 @@ function reasonFor(sensors: readonly SensorCapability[], field: string): string 
 }
 
 export function App() {
-  const { state, now, decide, setTrust } = useTelemetry();
+  const { state, now, decide, setTrust, selectProvider, setKey } = useTelemetry();
   const stale = isStale(state, now);
   const sample = state.sample;
   const sensors = state.sensors;
@@ -51,6 +52,14 @@ export function App() {
       <LinkStatus state={state} now={now} stale={stale} />
 
       <TrustControl enabled={state.trustEnabled} onChange={setTrust} />
+
+      <ProviderControl
+        mode={state.providerMode}
+        model={state.providerModel}
+        hasKey={state.hasKey}
+        onSelect={selectProvider}
+        onKey={setKey}
+      />
 
       {state.pendingApproval !== null && (
         <ApprovalDialog

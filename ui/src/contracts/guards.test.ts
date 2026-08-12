@@ -40,7 +40,15 @@ describe("contract examples", () => {
   // Messages the UI *sends*. parseServerMessage validates inbound frames, so accepting one of these
   // would mean the guards are wider than the direction of the contract - the UI would be willing to
   // receive a decision it is supposed to be the one making.
-  const uiSent = ["ws.client-hello.json", "ws.approval-decision.json", "ws.trust-set.json"];
+  const uiSent = [
+    "ws.client-hello.json",
+    "ws.approval-decision.json",
+    "ws.trust-set.json",
+    "ws.provider-select.json",
+    // The one in this list that matters most: a UI willing to *receive* a credential.set would be a
+    // UI that could be handed a key by anything that reached the socket.
+    "ws.credential-set.json",
+  ];
 
   it.each(valid.filter((name) => !uiSent.includes(name)))("accepts %s", (name) => {
     const result = parseServerMessage(load(join(EXAMPLES_DIR, name)));

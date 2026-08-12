@@ -82,6 +82,39 @@ class AuditRecord:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class EgressRecord:
+    """One connection attempt that was leaving this machine.
+
+    Deliberately *not* an AuditRecord with the destination stuffed into a capability field. That
+    record hashes its arguments, and a hashed destination is the one thing this record exists to
+    show: docs/SECURITY.md section 11 lists the audit as what makes egress **visible**, having
+    already stated that in Cloud mode it is not what prevents it.
+
+    Only non-loopback attempts are written. Telemetry runs at 1 Hz and the model server is local, so
+    recording those would bury the entries that matter in traffic that never left the machine.
+    """
+
+    mode: str
+    host: str
+    port: int
+    decision: Literal["allowed", "blocked"]
+    reason: str
+    ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+
+    def to_entry(self) -> dict[str, object]:
+        return {
+            "ts": self.ts,
+            "event": "egress",
+            "mode": self.mode,
+            # In the clear. See the class docstring - a hash here would defeat the purpose.
+            "host": self.host,
+            "port": self.port,
+            "decision": self.decision,
+            "reason": self.reason,
+        }
+
+
 class AuditLog:
     """One JSON object per line, opened for append every time.
 
@@ -100,7 +133,7 @@ class AuditLog:
     def path(self) -> Path:
         return self._path
 
-    def record(self, record: AuditRecord) -> None:
+    def record(self, record: AuditRecord | EgressRecord) -> None:
         line = json.dumps(record.to_entry(), separators=(",", ":"))
 
         with self._lock:

@@ -30,6 +30,10 @@ WsErrorCode = Literal[
     #: Replaces the IPC contract's sensor_read_failed: from the UI's side, an unreadable sensor and
     #: a dead sidecar are both "the system layer cannot tell you right now".
     "system_unavailable",
+    #: The selected model layer cannot be used - today, only "cloud was chosen and no key is
+    #: stored". Distinct from system_unavailable, which is about the sidecar: a user who confuses
+    #: "the sensors are down" with "your key is missing" goes looking in the wrong place.
+    "provider_unavailable",
     "internal_error",
 ]
 
@@ -235,6 +239,68 @@ class TrustSet(ContractModel):
     payload: TrustSetPayload
 
 
+ProviderModeName = Literal["local", "cloud"]
+
+
+class ProviderStatusPayload(ContractModel):
+    #: ``local`` sends nothing off this machine; ``cloud`` additionally permits outbound. See
+    #: docs/SECURITY.md section 11.
+    mode: ProviderModeName
+    model: Annotated[str, Field(min_length=1)]
+    #: Whether a key is stored. Never the key, never a prefix of it, never its length - and there is
+    #: a rejected example holding that line, because "just the last four characters" is exactly the
+    #: change somebody makes later in good faith.
+    has_key: bool
+    since: Timestamp
+
+
+class ProviderStatus(ContractModel):
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["provider.status"]
+    payload: ProviderStatusPayload
+
+
+class ProviderSelectPayload(ContractModel):
+    mode: ProviderModeName
+
+
+class ProviderSelect(ContractModel):
+    """The user's own switch over the network boundary, not an invocation.
+
+    Like ``TrustSet``: not a registered capability, so nothing a model proposes can reach it.
+    """
+
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["provider.select"]
+    payload: ProviderSelectPayload
+
+
+class CredentialSetPayload(ContractModel):
+    #: Bounded on both ends. Empty is refused where the mistake is rather than later as an
+    #: authentication failure with nothing pointing back here.
+    key: Annotated[str, Field(min_length=1, max_length=4096)]
+
+
+class CredentialSet(ContractModel):
+    """The key, crossing loopback once on its way into the Windows Credential Manager.
+
+    **This payload is never logged, never audited, and never echoed in a validation error.** The
+    acknowledgement is a ``provider.status`` carrying ``has_key``, not the value. A schema cannot
+    express "do not write this down", so the rule lives in docs/CONTRACTS.md section 5 and in the
+    brain's handling of this message.
+    """
+
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["credential.set"]
+    payload: CredentialSetPayload
+
+
 WsMessage = Annotated[
     ClientHello
     | ServerHello
@@ -245,7 +311,10 @@ WsMessage = Annotated[
     | ApprovalDecision
     | ApprovalResolved
     | TrustStatus
-    | TrustSet,
+    | TrustSet
+    | ProviderStatus
+    | ProviderSelect
+    | CredentialSet,
     Field(discriminator="type"),
 ]
 
@@ -255,7 +324,7 @@ WS_MESSAGE_ADAPTER: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 #: cannot construct a capability invocation. Accepting the full union inbound would let a browser tab
 #: send the brain a server.hello, or raise its own approval.request and then answer it.
 ClientMessage = Annotated[
-    ClientHello | ApprovalDecision | TrustSet,
+    ClientHello | ApprovalDecision | TrustSet | ProviderSelect | CredentialSet,
     Field(discriminator="type"),
 ]
 

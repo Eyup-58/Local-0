@@ -194,6 +194,47 @@ is `false` everywhere, so adding a field to an existing payload is a breaking ch
 message type is additive. The contract shape follows from the versioning rule rather than from
 convenience.
 
+### `provider.status` — brain → ui
+
+Payload: `mode` (`local` | `cloud`), `model`, `has_key`, `since`.
+
+Which model layer is in use and whether a cloud key is stored. Sent after `server.hello` and whenever
+either changes, for the same reason `trust.status` is: a tab that does not yet know the boundary is
+open would show the safe state while the permissive one is in force, which is the wrong way round to
+be wrong.
+
+`has_key` is a boolean and that is the whole of it. **The key is never sent to the UI** — not the
+value, not a prefix, not its length. `rejected/ws.provider-status-carrying-the-key.json` is the file
+that keeps a later well-meaning "just show the last four characters" change from being made quietly.
+
+### `provider.select` — ui → brain
+
+Payload: `mode`.
+
+Switches the network boundary described in `SECURITY.md` §11. Selecting `cloud` with no key stored is
+**refused with an error** rather than accepted — leaving the egress guard open while nothing can
+authenticate would be the worst of both states.
+
+Like `trust.set`, this is the user's own switch rather than an invocation: it is not a registered
+capability, so nothing a model proposes can reach it.
+
+### `credential.set` — ui → brain
+
+Payload: `key` (non-empty, ≤ 4096 characters).
+
+The cloud key, crossing the loopback socket once on its way into the Windows Credential Manager. The
+frame is **never logged, never audited, and never echoed in a validation error**; the brain
+acknowledges it with a `provider.status` carrying `has_key`, not with the value. The UI clears its
+field on send and never renders the value back.
+
+An empty key is refused at the schema (`minLength: 1`). Accepting one would store it, report
+`has_key: true`, and then fail as an authentication error somewhere with nothing pointing back here.
+
+**OPEN QUESTION — removing a stored key is not in this contract.** A `key: null` meaning "forget it"
+was considered and declined: null is what an accidental empty submit produces, and silently clearing
+a stored credential is not something a stray frame should be able to do. Until there is a message
+that says so explicitly, removal is done in Windows' own Credential Manager.
+
 ---
 
 ## 5. Versioning
@@ -245,6 +286,21 @@ would have been breaking under the `additionalProperties: false` rule above.
 
 Both ends still ship together, as §5 says additive changes require in practice.
 
+### Additions in M4 — `v` unchanged
+
+**2026-08-12 — three message types added** for provider selection and key entry:
+`provider.status`, `provider.select`, `credential.set`. `ipc.schema.json` is untouched; the sidecar
+has no part in the model layer.
+
+Additive again, so `v` stays 1, and the same constraint shaped the design a second time: the current
+mode is carried by its own `provider.status` message rather than by a field on `server.hello`,
+because `additionalProperties: false` makes adding that field breaking.
+
+`credential.set` is the first message in this contract whose payload must never be logged. That is a
+handling rule rather than a schema rule — a schema cannot express "do not write this down" — so it is
+stated here, in `SECURITY.md` §11, and in the schema's own description, and enforced in the brain by
+the frame never reaching the audit log or an error message.
+
 ---
 
 ## 6. Change procedure
@@ -288,6 +344,8 @@ from an assertion into a test:
 | `ws.unsupported-version.json` | Version mismatch fails closed |
 | `ws.approval-unknown-decision.json` | A decision the brain cannot interpret fails closed rather than being read as either answer |
 | `ws.approval-nested-args.json` | `resolved_args` values stay scalar, so markup cannot re-enter the payload the user reads to decide |
+| `ws.credential-set-empty.json` | An empty key is refused where the mistake is, not later as an authentication failure |
+| `ws.provider-status-carrying-the-key.json` | The key cannot ride back to the UI inside a status message |
 
 One valid example is worth naming for the same reason: `ws.approval-request-untrusted.json` is a
 **valid** message whose `content` argument carries `<img src=x onerror=alert(1)>` and an instruction
@@ -300,7 +358,7 @@ message definition matching the `type` field before validating — otherwise the
 collapses every failure into "not valid under any of the given schemas", which cannot distinguish a
 message rejected for the intended reason from one rejected by accident.
 
-Current state, verified 2026-08-12: **22/22 expectations hold** (15 valid, 7 rejected).
+Current state, verified 2026-08-12: **27/27 expectations hold** (18 valid, 9 rejected).
 
 ---
 

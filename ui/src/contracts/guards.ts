@@ -17,6 +17,7 @@ import {
   type GpuPayload,
   type MemoryPayload,
   type Origin,
+  type ProviderMode,
   type ResolvedArgument,
   type SensorCapability,
   type SensorSource,
@@ -37,8 +38,11 @@ const ERROR_CODES: readonly WsErrorCode[] = [
   "unsupported_version",
   "handshake_required",
   "system_unavailable",
+  "provider_unavailable",
   "internal_error",
 ];
+
+const PROVIDER_MODES: readonly ProviderMode[] = ["local", "cloud"];
 
 const SIDE_EFFECTS: readonly SideEffect[] = ["read", "write", "destructive"];
 
@@ -234,6 +238,22 @@ function validatePayload(type: string, payload: unknown): string | null {
       if (!hasExactKeys(payload, ["enabled", "since"])) return "trust.status payload has unexpected fields";
       if (typeof payload.enabled !== "boolean") return "trust.status enabled is not a boolean";
       if (!isString(payload.since)) return "trust.status since is not a string";
+      return null;
+    }
+
+    case "provider.status": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["mode", "model", "has_key", "since"])) {
+        // Exact keys is what keeps a key from ever riding in here. A future field carrying one
+        // would be dropped by this build rather than rendered.
+        return "provider.status payload has unexpected fields";
+      }
+      if (!isString(payload.mode) || !PROVIDER_MODES.includes(payload.mode as ProviderMode)) {
+        return "provider.status mode is unknown";
+      }
+      if (!isString(payload.model) || payload.model.length === 0) return "provider.status model is empty";
+      if (typeof payload.has_key !== "boolean") return "provider.status has_key is not a boolean";
+      if (!isString(payload.since)) return "provider.status since is not a string";
       return null;
     }
 

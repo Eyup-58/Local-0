@@ -679,3 +679,70 @@ body {
 .trust-control {
   margin-bottom: var(--gap);
 }
+
+/*
+ * The network boundary. Deliberately quieter than the trust banner: this is a setting the user
+ * chose, not a warning about a control being off. What it must never be is ambiguous - the mode
+ * reads as a word, not as the presence or absence of a highlight.
+ */
+.provider {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 14px var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.provider__state {
+  margin: 0 0 10px;
+  color: var(--ink-dim);
+}
+
+.provider__state strong {
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.provider__controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.provider__key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider__label {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.provider__input {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: var(--panel-edge);
+  color: var(--ink);
+  min-width: 28ch;
+}
+
+.provider__input:focus-visible {
+  outline: 2px solid var(--cool);
+  outline-offset: 2px;
+}
+
+.provider__note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 70ch;
+}

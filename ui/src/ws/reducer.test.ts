@@ -165,3 +165,41 @@ describe("staleness", () => {
     expect(state.sample).not.toBeNull();
   });
 });
+
+describe("the network boundary", () => {
+  const providerStatus = example("ws.provider-status.json");
+
+  it("starts local, before the brain has said anything", () => {
+    // The state before anything is known has to be the one that sends nothing.
+    expect(initialState.providerMode).toBe("local");
+    expect(initialState.hasKey).toBe(false);
+  });
+
+  it("takes the mode from the brain rather than assuming it", () => {
+    const state = frame(connected(), {
+      ...providerStatus,
+      payload: { ...(providerStatus.payload as object), mode: "cloud", has_key: true },
+    });
+
+    expect(state.providerMode).toBe("cloud");
+    expect(state.hasKey).toBe(true);
+  });
+
+  it("records the model the brain reported", () => {
+    const state = frame(connected(), providerStatus);
+
+    expect(state.providerModel).toBe((providerStatus.payload as { model: string }).model);
+  });
+
+  it("drops a status frame carrying anything resembling a key, rather than rendering it", () => {
+    const before = connected();
+
+    const state = frame(before, {
+      ...providerStatus,
+      payload: { ...(providerStatus.payload as object), key: "AIzaSy-should-never-arrive" },
+    });
+
+    expect(state.providerMode).toBe(before.providerMode);
+    expect(state.droppedFrames).toBe(before.droppedFrames + 1);
+  });
+});

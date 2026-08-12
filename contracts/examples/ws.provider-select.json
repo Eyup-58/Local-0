@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "id": "5e91c3d7-2b48-4a06-93f1-c8027de5401a",
+  "ts": "2026-08-12T18:30:12.400Z",
+  "type": "provider.select",
+  "payload": {
+    "mode": "cloud"
+  }
+}

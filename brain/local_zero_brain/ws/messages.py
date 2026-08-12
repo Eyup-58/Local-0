@@ -123,6 +123,18 @@ class WsMessageFactory:
     def trust_status(self, *, enabled: bool, since: str) -> dict[str, Any]:
         return self._envelope("trust.status", {"enabled": enabled, "since": since})
 
+    def provider_status(self, *, mode: str, model: str, has_key: bool, since: str) -> dict[str, Any]:
+        """What the UI is told about the model layer.
+
+        ``has_key`` is a boolean and that is the whole of it. The key is never sent to the UI - not
+        the value, not a prefix, not its length. There is a rejected contract example holding that
+        line, because "just show the last four characters" is exactly the change somebody makes
+        later in good faith.
+        """
+        return self._envelope(
+            "provider.status", {"mode": mode, "model": model, "has_key": has_key, "since": since}
+        )
+
     def error(self, *, code: WsErrorCode, message: str, in_reply_to: str | None = None) -> dict[str, Any]:
         return self._envelope(
             "error",

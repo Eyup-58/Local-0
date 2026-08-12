@@ -1,0 +1,14 @@
+{
+  "_why_rejected": "the payload carries a 'key' field. provider.status reports whether a key is stored and never what it is - not the value, not a prefix, not its length. additionalProperties false is what stops a well-meaning change from adding it later, and this file is what stops that change from being made quietly.",
+  "v": 1,
+  "id": "3f6b1a48-8e07-42d5-91c3-a2b70de49517",
+  "ts": "2026-08-12T18:31:20.006Z",
+  "type": "provider.status",
+  "payload": {
+    "mode": "cloud",
+    "model": "gemini-2.0-flash",
+    "has_key": true,
+    "key": "AIzaSy-would-be-a-real-key-here",
+    "since": "2026-08-12T18:31:20.006Z"
+  }
+}

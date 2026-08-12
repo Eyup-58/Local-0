@@ -1,0 +1,1 @@
+﻿chore(contracts): update ws schema, docs, and example files for M4 provider selection

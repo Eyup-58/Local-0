@@ -211,6 +211,7 @@
                 "unsupported_version",
                 "handshake_required",
                 "system_unavailable",
+                "provider_unavailable",
                 "internal_error"
               ]
             },
@@ -372,6 +373,90 @@
       },
       "required": ["v", "id", "ts", "type", "payload"],
       "additionalProperties": false
+    },
+
+    "providerMode": {
+      "description": "local sends nothing off this machine; cloud additionally permits outbound to one provider. local is the state before anybody chooses anything - see docs/SECURITY.md section 11.",
+      "type": "string",
+      "enum": ["local", "cloud"]
+    },
+
+    "providerStatusMessage": {
+      "description": "brain -> ui. Which model layer is in use and whether a key is stored. Sent after server.hello and whenever either changes. It reports whether a key exists; the key itself is never sent to the UI, in this message or any other.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "provider.status" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "mode": { "$ref": "#/$defs/providerMode" },
+            "model": {
+              "description": "The model identifier in use for the current mode. Display only.",
+              "type": "string",
+              "minLength": 1
+            },
+            "has_key": {
+              "description": "Whether a cloud key is stored in the Windows Credential Manager. Never the key, never a prefix of it, never its length.",
+              "type": "boolean"
+            },
+            "since": { "$ref": "#/$defs/timestamp" }
+          },
+          "required": ["mode", "model", "has_key", "since"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "providerSelectMessage": {
+      "description": "ui -> brain. Switches the network boundary. Selecting cloud with no key stored is refused with an error rather than silently leaving the boundary open. Like trust.set this is the user's own switch and not a registered capability, so no invocation can reach it.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "provider.select" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "mode": { "$ref": "#/$defs/providerMode" }
+          },
+          "required": ["mode"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
+    "credentialSetMessage": {
+      "description": "ui -> brain. The cloud key, crossing the loopback socket once on its way into the Windows Credential Manager. This frame is never logged, never audited, and never echoed in a validation error; the brain acknowledges it with provider.status carrying has_key, not with the value. Removing a stored key is deliberately not in this contract - see docs/CONTRACTS.md section 5.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "credential.set" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "description": "Non-empty. An empty key is a missing key wearing the shape of a present one, and it would surface later as an authentication failure with nothing pointing back to here.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": ["key"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
     }
   },
 
@@ -385,6 +470,9 @@
     { "$ref": "#/$defs/approvalDecisionMessage" },
     { "$ref": "#/$defs/approvalResolvedMessage" },
     { "$ref": "#/$defs/trustStatusMessage" },
-    { "$ref": "#/$defs/trustSetMessage" }
+    { "$ref": "#/$defs/trustSetMessage" },
+    { "$ref": "#/$defs/providerStatusMessage" },
+    { "$ref": "#/$defs/providerSelectMessage" },
+    { "$ref": "#/$defs/credentialSetMessage" }
   ]
 }

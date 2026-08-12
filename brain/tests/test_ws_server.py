@@ -18,7 +18,12 @@ from local_zero_brain.capabilities.guard import Guard, Invocation, Pending
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.contracts.ws import WS_MESSAGE_ADAPTER
 from local_zero_brain.ipc.pipe_client import PipeConnected, PipeLine
+from local_zero_brain.credentials import CredentialStore
+from local_zero_brain.memory.index import MemoryIndex
+from local_zero_brain.memory.manager import MemoryManager
 from local_zero_brain.metrics import DropCounters
+from local_zero_brain.net.egress import EgressGuard
+from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
 from local_zero_brain.ws.messages import WsMessageFactory
 from local_zero_brain.ws.server import BIND_HOST, BrainServices, _execute, create_app
@@ -34,12 +39,13 @@ CLIENT_HELLO = {
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    """An app whose workspace, trust file and audit log are all temporary.
+    """An app whose workspace, trust file, audit log and memory index are all temporary.
 
-    Without the three paths, create_app falls back to the real %LOCALAPPDATA%\\LocalZero and a
-    relative logs/ directory - so the suite would read the user's actual trust state, meaning these
-    tests would start failing the day somebody turned the button on, and would scatter audit lines
-    into whatever directory pytest happened to run from.
+    Without these paths, create_app falls back to the real %LOCALAPPDATA%\\LocalZero and a relative
+    logs/ directory - so the suite would read the user's actual trust state, meaning these tests
+    would start failing the day somebody turned the button on, would scatter audit lines into
+    whatever directory pytest happened to run from, and would write a memory index into the user's
+    own profile.
     """
     return TestClient(
         create_app(
@@ -48,6 +54,7 @@ def client(tmp_path: Path) -> TestClient:
             workspace=tmp_path / "workspace",
             trust_path=tmp_path / "trust.json",
             audit_path=tmp_path / "logs" / "audit.jsonl",
+            memory_path=tmp_path / "memory.sqlite",
         )
     )
 
@@ -105,14 +112,16 @@ def test_a_hello_with_an_unimplemented_version_is_refused_as_such(client: TestCl
 
 
 def handshake(socket) -> None:
-    """Completes the opening exchange: client.hello, then server.hello and trust.status.
+    """Completes the opening exchange: client.hello, then server.hello, trust.status, provider.status.
 
-    Trust state arrives immediately after the hello because a tab that does not yet know approval is
-    off would show the safe state while the permissive one is in force.
+    Both state messages arrive immediately after the hello for the same reason: a tab that does not
+    yet know approval is off - or that the network boundary is open - would show the safe state while
+    the permissive one is in force, which is the wrong way round to be wrong.
     """
     socket.send_text(json.dumps(CLIENT_HELLO))
     assert socket.receive_json()["type"] == "server.hello"
     assert socket.receive_json()["type"] == "trust.status"
+    assert socket.receive_json()["type"] == "provider.status"
 
 
 async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -> None:
@@ -148,6 +157,10 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
         messages=WsMessageFactory(),
         guard=guard,
         trust=TrustStore(tmp_path / "trust.json"),
+        egress=EgressGuard(audit=AuditLog(tmp_path / "logs" / "audit.jsonl")),
+        providers=ProviderStore(tmp_path / "provider.json"),
+        credentials=CredentialStore(target="LocalZero/test/ws-server"),
+        memory=MemoryManager(root=None, index=MemoryIndex(tmp_path / "memory.sqlite")),
         log=lambda _: None,
     )
 
@@ -224,8 +237,9 @@ def test_a_registered_client_receives_broadcast_frames(client: TestClient) -> No
 def test_a_disconnecting_client_is_unregistered(client: TestClient) -> None:
     with client:
         with client.websocket_connect("/ws") as socket:
-            socket.send_text(json.dumps(CLIENT_HELLO))
-            socket.receive_json()
+            # The full opening exchange, not just the first frame: registration happens after the
+            # brain has sent all of it, so reading one frame and asserting is a race.
+            handshake(socket)
             assert client.app.state.services.hub.client_count == 1
 
         # Leaving the with-block closes the socket; the endpoint's finally clause unregisters it.

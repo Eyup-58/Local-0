@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useReducer, useRef, useState } from "react";
-import { CONTRACT_VERSION } from "../contracts/types";
+import { CONTRACT_VERSION, type ProviderMode } from "../contracts/types";
 import { initialState, telemetryReducer, type TelemetryState } from "./reducer";
 
 const UI_VERSION = "0.1.0";
@@ -47,6 +47,15 @@ export interface Telemetry {
   readonly decide: (requestId: string, approve: boolean) => void;
   /** Turns approval off or back on. The only message that changes trust state. */
   readonly setTrust: (enabled: boolean) => void;
+  /** Moves the network boundary. The brain refuses cloud when no key is stored. */
+  readonly selectProvider: (mode: ProviderMode) => void;
+  /**
+   * Sends the cloud key, once, over loopback.
+   *
+   * It is not held in this hook, not put in the reducer, and not echoed back by the brain. The
+   * only acknowledgement is a provider.status carrying has_key.
+   */
+  readonly setKey: (key: string) => void;
 }
 
 export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
@@ -120,5 +129,7 @@ export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
     decide: (requestId, approve) =>
       send("approval.decision", { request_id: requestId, decision: approve ? "approve" : "reject" }),
     setTrust: (enabled) => send("trust.set", { enabled }),
+    selectProvider: (mode) => send("provider.select", { mode }),
+    setKey: (key) => send("credential.set", { key }),
   };
 }

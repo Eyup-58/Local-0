@@ -92,6 +92,12 @@ export type WsErrorCode =
   | "unsupported_version"
   | "handshake_required"
   | "system_unavailable"
+  /**
+   * The selected model layer cannot be used — today, only "cloud was chosen and no key is stored".
+   * Distinct from system_unavailable, which is about the sidecar: a user who confuses "the sensors
+   * are down" with "your key is missing" goes looking in the wrong place.
+   */
+  | "provider_unavailable"
   | "internal_error";
 
 export type WsError = Envelope<
@@ -152,6 +158,23 @@ export type TrustStatus = Envelope<
   }
 >;
 
+export type ProviderMode = "local" | "cloud";
+
+export type ProviderStatus = Envelope<
+  "provider.status",
+  {
+    /** local sends nothing off this machine; cloud additionally permits outbound. */
+    readonly mode: ProviderMode;
+    readonly model: string;
+    /**
+     * Whether a key is stored — never the key, never a prefix of it, never its length. There is a
+     * rejected contract example holding that line.
+     */
+    readonly has_key: boolean;
+    readonly since: string;
+  }
+>;
+
 /** Everything the brain may send to the UI. */
 export type ServerMessage =
   | ServerHello
@@ -160,4 +183,5 @@ export type ServerMessage =
   | WsError
   | ApprovalRequest
   | ApprovalResolved
-  | TrustStatus;
+  | TrustStatus
+  | ProviderStatus;

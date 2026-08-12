@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "b17c4e02-9f3a-4d81-8c25-7e60a4d91b3f",
+  "ts": "2026-08-12T18:30:00.000Z",
+  "type": "provider.status",
+  "payload": {
+    "mode": "local",
+    "model": "gemma4:26b",
+    "has_key": false,
+    "since": "2026-08-12T18:30:00.000Z"
+  }
+}

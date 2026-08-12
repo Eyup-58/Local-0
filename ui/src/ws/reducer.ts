@@ -7,7 +7,7 @@
  */
 
 import { parseServerMessage } from "../contracts/guards";
-import type { ApprovalRequest, SensorCapability, TelemetryPayload } from "../contracts/types";
+import type { ApprovalRequest, ProviderMode, SensorCapability, TelemetryPayload } from "../contracts/types";
 
 export type LinkState = "connecting" | "open" | "closed";
 
@@ -40,6 +40,16 @@ export interface TelemetryState {
    * UI showing "off" while the brain has it on would be the more dangerous of the two mistakes.
    */
   readonly trustEnabled: boolean;
+  /**
+   * The network boundary, as reported by the brain. `local` sends nothing off this machine.
+   *
+   * Same rule as trustEnabled: never assumed by the UI. A tab showing `local` while the brain has
+   * `cloud` in force would be the more dangerous of the two mistakes.
+   */
+  readonly providerMode: ProviderMode;
+  readonly providerModel: string;
+  /** Whether a cloud key is stored. The key itself never reaches this state, or any other. */
+  readonly hasKey: boolean;
 }
 
 export const initialState: TelemetryState = {
@@ -58,6 +68,11 @@ export const initialState: TelemetryState = {
   // Off until the brain says otherwise. Defaulting to on would mean a UI that had not yet heard
   // from the brain displayed the permissive state, which is the wrong way round to be wrong.
   trustEnabled: false,
+  // Local until the brain says otherwise, for the same reason trust starts off: the state before
+  // anything is known has to be the one that sends nothing.
+  providerMode: "local",
+  providerModel: "",
+  hasKey: false,
 };
 
 export type TelemetryAction =
@@ -139,6 +154,14 @@ function applyFrame(state: TelemetryState, raw: string, now: number): TelemetryS
 
     case "trust.status":
       return { ...state, trustEnabled: message.payload.enabled };
+
+    case "provider.status":
+      return {
+        ...state,
+        providerMode: message.payload.mode,
+        providerModel: message.payload.model,
+        hasKey: message.payload.has_key,
+      };
   }
 }
 

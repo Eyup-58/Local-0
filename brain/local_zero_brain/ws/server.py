@@ -22,10 +22,24 @@ from local_zero_brain.capabilities.guard import Guard, Invocation, Pending, Verd
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.capabilities.paths import workspace_root
 from local_zero_brain.contracts.common import CONTRACT_VERSION
-from local_zero_brain.contracts.ws import CLIENT_HELLO_ADAPTER, CLIENT_MESSAGE_ADAPTER, ApprovalDecision, TrustSet
+from local_zero_brain.contracts.ws import (
+    CLIENT_HELLO_ADAPTER,
+    CLIENT_MESSAGE_ADAPTER,
+    ApprovalDecision,
+    CredentialSet,
+    ProviderSelect,
+    TrustSet,
+)
+from local_zero_brain.credentials import CredentialStore, Secret
 from local_zero_brain.ipc.pipe_client import DEFAULT_PIPE_NAME, PipeEvent, SystemPipeClient
 from local_zero_brain.link import SystemLink
 from local_zero_brain.metrics import DropCounters
+from local_zero_brain.llm.ollama import DEFAULT_MODEL as LOCAL_MODEL, OllamaProvider
+from local_zero_brain.llm.gemini import DEFAULT_MODEL as CLOUD_MODEL
+from local_zero_brain.memory.index import MemoryIndex
+from local_zero_brain.memory.manager import MemoryManager
+from local_zero_brain.net.egress import EgressGuard
+from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
 from local_zero_brain.ws.hub import UiHub
 from local_zero_brain.ws.messages import WsMessageFactory
@@ -49,6 +63,14 @@ class BrainServices:
     messages: WsMessageFactory
     guard: Guard
     trust: TrustStore
+    #: The network boundary. Local until the user selects otherwise.
+    egress: EgressGuard
+    #: Which model layer is selected, persisted across restarts.
+    providers: ProviderStore
+    #: Where the cloud key lives. The brain reads it to answer "is one stored"; it never sends it.
+    credentials: CredentialStore
+    #: Long-term memory over the Obsidian vault. Disabled, not broken, when there is no vault.
+    memory: MemoryManager
     log: Any = print
     #: Guard verdicts waiting on a human, by request_id.
     #:
@@ -93,6 +115,9 @@ def create_app(
     workspace: Path | None = None,
     trust_path: Path | None = None,
     audit_path: Path | None = None,
+    provider_path: Path | None = None,
+    credential_target: str | None = None,
+    memory_path: Path | None = None,
 ) -> FastAPI:
     """Builds the application.
 
@@ -108,16 +133,31 @@ def create_app(
     root = workspace or workspace_root()
     root.mkdir(parents=True, exist_ok=True)
     trust = TrustStore(trust_path or TrustStore.default_path())
+    providers = ProviderStore(provider_path or ProviderStore.default_path())
+    audit = AuditLog(audit_path or Path("logs") / "audit.jsonl")
+
+    # The embedding provider is always the local one, whatever mode the user has selected. That is
+    # docs/SECURITY.md section 11's "embeddings are local in both modes" made structural rather than
+    # remembered: indexing the vault through a network provider would send its contents off the
+    # machine one chunk at a time, and there is no code path here that could.
+    memory = MemoryManager.from_environment(
+        index_path=memory_path or MemoryIndex.default_path(),
+        provider=OllamaProvider(),
+        log=log,
+    )
 
     guard = Guard(
         registry=build_registry(root),
         workspace=root,
-        audit=AuditLog(audit_path or Path("logs") / "audit.jsonl"),
+        audit=audit,
         trust=trust,
-        # The trust file is out of reach for every capability whatever its allowed_roots says. It is
-        # already outside the workspace, so containment refuses it today; this keeps that true when
-        # M5 registers capabilities with roots wide enough to contain it.
-        protected_paths=(trust.path,),
+        # Local Zero's own control files are out of reach for every capability whatever its
+        # allowed_roots says. Both are already outside the workspace, so containment refuses them
+        # today; this keeps that true when M5 registers capabilities with roots wide enough to
+        # contain them. provider.json belongs here for the same reason trust.json does: a capability
+        # that could write it could move the egress boundary into Cloud mode, and the boundary would
+        # then be something the system can open for itself.
+        protected_paths=(trust.path, providers.path, memory.index.path),
     )
 
     services = BrainServices(
@@ -127,11 +167,20 @@ def create_app(
         link=None,  # type: ignore[arg-type]
         guard=guard,
         trust=trust,
+        egress=EgressGuard(audit=audit, mode=providers.load().mode),
+        providers=providers,
+        credentials=CredentialStore(credential_target) if credential_target else CredentialStore(),
+        memory=memory,
         log=log,
     )
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Before anything else can open a socket. docs/SECURITY.md section 11: Local mode is the
+        # state before anybody chooses anything, and in Local mode the guard is total - nothing
+        # non-loopback connects, whatever library attempts it.
+        services.egress.install()
+
         client: SystemPipeClient | None = None
         if start_pipe_client:
             client = SystemPipeClient(
@@ -156,14 +205,25 @@ def create_app(
             client.start()
 
         services.reader = asyncio.create_task(services.link.run(), name="system-link")
+
+        # On a worker thread: a first scan walks the whole vault and would otherwise hold the event
+        # loop - and with it the telemetry stream - for as long as that takes. Memory is the part of
+        # this product that may be slow; the panel is not.
+        indexer = asyncio.create_task(asyncio.to_thread(services.memory.reindex), name="memory-index")
+
         try:
             yield
         finally:
             services.reader.cancel()
+            indexer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await services.reader
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await indexer
             if client is not None:
                 client.stop()
+
+            services.egress.uninstall()
 
             snapshot = counters.snapshot()
             log(f"stopped. dropped messages: {snapshot}")
@@ -236,7 +296,27 @@ async def _complete_handshake(websocket: WebSocket, services: BrainServices) -> 
     trust = services.trust.load()
     await websocket.send_json(services.messages.trust_status(enabled=trust.enabled, since=trust.since))
 
+    # For the same reason as trust: a tab that does not yet know the boundary is open would show the
+    # safe state while the permissive one is in force.
+    await websocket.send_json(_provider_frame(services))
+
     return True
+
+
+def _provider_frame(services: BrainServices) -> dict[str, Any]:
+    """The current selection, as the UI is allowed to see it.
+
+    ``has_key`` is read from the Credential Manager each time rather than cached, because the user
+    can remove the entry in Windows' own interface and a cached true would leave the UI offering a
+    mode that cannot authenticate.
+    """
+    state = services.providers.load()
+    return services.messages.provider_status(
+        mode=state.mode,
+        model=LOCAL_MODEL if state.mode == "local" else CLOUD_MODEL,
+        has_key=services.credentials.has_key(),
+        since=state.since,
+    )
 
 
 async def _handle_ui_frame(websocket: WebSocket, services: BrainServices, frame: str) -> None:
@@ -254,8 +334,8 @@ async def _handle_ui_frame(websocket: WebSocket, services: BrainServices, frame:
         await websocket.send_json(
             services.messages.error(
                 code="schema_violation",
-                message="The UI may not send this message. Only client.hello, approval.decision and "
-                "trust.set are accepted on this socket.",
+                message="The UI may not send this message. Only client.hello, approval.decision, "
+                "trust.set, provider.select and credential.set are accepted on this socket.",
             )
         )
         _ = error
@@ -267,6 +347,14 @@ async def _handle_ui_frame(websocket: WebSocket, services: BrainServices, frame:
 
     if isinstance(message, TrustSet):
         await _apply_trust(services, message)
+        return
+
+    if isinstance(message, ProviderSelect):
+        await _apply_provider(websocket, services, message)
+        return
+
+    if isinstance(message, CredentialSet):
+        await _apply_credential(services, message)
         return
 
     # A second client.hello on an established connection.
@@ -346,6 +434,43 @@ async def _apply_trust(services: BrainServices, message: TrustSet) -> None:
     """
     state = services.trust.set(enabled=message.payload.enabled)
     await services.hub.broadcast(services.messages.trust_status(enabled=state.enabled, since=state.since))
+
+
+async def _apply_provider(websocket: WebSocket, services: BrainServices, message: ProviderSelect) -> None:
+    """Moves the network boundary, or refuses to.
+
+    Selecting Cloud with no key stored is refused rather than accepted: the egress guard would be
+    open while nothing could authenticate, which is the worst of both states - outbound permitted,
+    no working provider, and a UI that says Cloud.
+    """
+    mode = message.payload.mode
+
+    if mode == "cloud" and not services.credentials.has_key():
+        await websocket.send_json(
+            services.messages.error(
+                code="provider_unavailable",
+                message="Cloud mode needs a key and none is stored. Enter one first; it is written "
+                "to the Windows Credential Manager. The boundary stays local until then.",
+            )
+        )
+        return
+
+    state = services.providers.set(mode=mode)
+    # The persisted selection and the live guard move together. If these could disagree, the UI
+    # would be reporting one boundary while another was in force.
+    services.egress.set_mode(state.mode)
+    await services.hub.broadcast(_provider_frame(services))
+
+
+async def _apply_credential(services: BrainServices, message: CredentialSet) -> None:
+    """Writes the key straight into the Windows Credential Manager.
+
+    Nothing about this frame is logged, audited or echoed - not on success, not on failure. The
+    acknowledgement is a provider.status carrying has_key, which is what the UI needs and all it
+    gets. docs/CONTRACTS.md section 5.
+    """
+    services.credentials.write(Secret(message.payload.key))
+    await services.hub.broadcast(_provider_frame(services))
 
 
 async def _close_with_error(websocket: WebSocket, services: BrainServices, *, code: Any, message: str) -> None:
