@@ -31,7 +31,7 @@ describe("what the screen says about the boundary", () => {
   });
 
   it("names cloud mode and says requests go to the provider", () => {
-    render(<ProviderControl mode="cloud" model="gemini-2.0-flash" hasKey onSelect={noop} onKey={noop} />);
+    render(<ProviderControl mode="cloud" model="gemini-2.5-flash" hasKey onSelect={noop} onKey={noop} />);
 
     expect(screen.getByRole("status")).toHaveTextContent(/cloud/i);
     expect(screen.getByRole("status")).toHaveTextContent(/go to the provider/i);
@@ -69,7 +69,7 @@ describe("selecting a mode", () => {
 
   it("always allows the way back to local", () => {
     const onSelect = vi.fn();
-    render(<ProviderControl mode="cloud" model="gemini-2.0-flash" hasKey onSelect={onSelect} onKey={noop} />);
+    render(<ProviderControl mode="cloud" model="gemini-2.5-flash" hasKey onSelect={onSelect} onKey={noop} />);
 
     fireEvent.click(screen.getByRole("button", { name: /use local/i }));
 
@@ -116,7 +116,7 @@ describe("the key", () => {
 
   it("says a key is stored without showing any part of it", () => {
     const { container } = render(
-      <ProviderControl mode="cloud" model="gemini-2.0-flash" hasKey onSelect={noop} onKey={noop} />,
+      <ProviderControl mode="cloud" model="gemini-2.5-flash" hasKey onSelect={noop} onKey={noop} />,
     );
 
     expect(screen.getByText(/a key is stored/i)).toBeInTheDocument();

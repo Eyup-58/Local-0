@@ -26,10 +26,23 @@ from local_zero_brain.llm.provider import MalformedOutput, post_json
 #: caller can set is an endpoint an untrusted value can eventually set.
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-#: OPEN QUESTION: unverified against the live API, because nothing here has made a network call yet.
-#: The first real request is where this gets confirmed; the model is a parameter so a wrong default
-#: is a configuration change rather than a code change.
-DEFAULT_MODEL = "gemini-2.0-flash"
+#: Verified against the live API on 2026-08-12 - which is also how the previous default was found to
+#: be wrong. ``gemini-2.0-flash`` had been pinned on a guess and no longer exists: it is absent from
+#: everything ``/v1beta/models`` reports as supporting generateContent.
+#:
+#: Chosen by measurement rather than by version number. Five planner turns each:
+#:
+#:     gemini-2.5-flash   5/5 correct   median 0.82s   max 1.00s
+#:     gemini-3.5-flash   5/5 correct   median 1.94s   max 6.00s
+#:     gemini-3.6-flash   correct, but 25s on a cold first call
+#:     gemini-2.5-pro     HTTP 404 - listed by the API, not reachable with this key
+#:
+#: The planner runs on every turn and the user waits on it, so once correctness ties latency is what
+#: decides. A newer model is not automatically a better planner.
+#:
+#: An explicit version, never a ``-latest`` alias: an alias would swap the model under a prompt tuned
+#: for strict JSON without anything in this repository changing. Same reasoning as BASE_URL above.
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 class GeminiProvider:
