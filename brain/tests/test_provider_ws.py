@@ -78,9 +78,9 @@ def client(tmp_path: Path, audit_path: Path) -> Iterator[TestClient]:
     store.delete()
 
 
-#: server.hello, then the three state messages the UI must not be wrong about: whether approval is
-#: on, where the network boundary is, and whether memory is loaded.
-OPENING_FRAMES = 4
+#: server.hello, then the four state messages the UI must not be wrong about: whether approval is
+#: on, where the network boundary is, whether memory is loaded, and what turn is in progress.
+OPENING_FRAMES = 5
 
 
 def handshake(socket) -> list[dict]:
@@ -100,6 +100,7 @@ def test_the_handshake_reports_the_boundary_before_anything_else_happens(client:
         "trust.status",
         "provider.status",
         "memory.status",
+        "turn.state",
     ]
     assert frames[2]["payload"]["mode"] == "local"
     assert frames[2]["payload"]["has_key"] is False

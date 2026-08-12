@@ -1,0 +1,386 @@
+/*
+ * The orchestration centre shell.
+ *
+ * Split from styles.css because that file carries the panel-component vocabulary - metrics,
+ * gauges, the void hatch - and this one carries the surface those components sit on. Loaded by
+ * main.tsx rather than an @import: bans.test.ts refuses @import url(), since the same rule that
+ * keeps a font CDN out has no way to tell a local stylesheet from a remote one.
+ */
+
+/* ---------------------------------------------------------------- HUD shell
+ *
+ * The orchestration centre: a black stage with the core in the middle of whatever space is free,
+ * chrome pinned to the edges, and the dock sliding in over the right rather than taking a grid
+ * column. The dock overlaying is what lets the core re-centre itself in the remaining width - a
+ * column would reflow the whole page every time a panel opened.
+ *
+ * --chrome-right is the one value the slide drives: the top bar, the reading strip, the caption
+ * stack and the control bar all end where the dock begins, and they animate on the same curve so
+ * the whole surface reads as one movement rather than five.
+ */
+.hud {
+  --chrome-right: 0px;
+  --rail-w: 74px;
+  --dock-w: min(472px, 46vw);
+  --hud-ink: #e9eef1;
+  --hud-dim: rgba(233, 238, 241, 0.42);
+  --hud-rule: rgba(255, 255, 255, 0.08);
+  --hud-teal: #6fe3c8;
+  --hud-amber: #f0b366;
+  --hud-red: #f0625b;
+  /* The reported turn, as a colour. Overridden per state below; never set from a timer. */
+  --state: #6f7bff;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+  color: var(--hud-ink);
+  font-family: var(--sans);
+  font-weight: 300;
+}
+.hud--dock-open { --chrome-right: var(--dock-w); }
+
+/* Turn colours. Data attribute rather than a class per state so the mapping lives in one place. */
+.hud[data-turn="idle"] { --state: #6f7bff; }
+.hud[data-turn="listening"] { --state: #5fd0ff; }
+.hud[data-turn="thinking"] { --state: #ffa53d; }
+.hud[data-turn="tool_running"] { --state: #b9f04a; }
+.hud[data-turn="speaking"] { --state: #6fe3c8; }
+/* Link trouble outranks the turn: a stale panel must not look like a calm one. */
+.hud--stale { --state: #6f8aa6; }
+
+.hud__grid, .hud__vignette { position: absolute; inset: 0; pointer-events: none; }
+.hud__grid {
+  background-image: linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);
+  background-size: 132px 132px;
+  mask-image: radial-gradient(120% 90% at 50% 45%, rgba(0,0,0,.9), transparent 72%);
+}
+.hud__vignette { background: radial-gradient(80% 60% at 50% 50%, transparent 40%, rgba(0,0,0,.72) 100%); }
+
+/* --------------------------------------------------------------- top bar */
+.hud__top {
+  position: absolute; top: 0; left: 0; right: var(--chrome-right); height: 58px; z-index: 6;
+  display: flex; align-items: center; padding: 0 22px 0 96px;
+  border-bottom: 1px solid var(--hud-rule);
+  transition: right .55s cubic-bezier(.16,.84,.24,1);
+}
+.hud__mark {
+  margin: 0; flex: none; white-space: nowrap;
+  font: 400 12px/1 var(--mono); letter-spacing: .44em; color: #f2f6f8;
+}
+.hud__mark-tail { color: var(--hud-teal); }
+.hud__mark-tm { font-size: 8px; vertical-align: super; letter-spacing: 0; opacity: .5; }
+.hud__pills { flex: 1; min-width: 0; display: flex; justify-content: center; padding: 0 12px; }
+.hud__pills--right { flex: none; justify-content: flex-end; align-items: center; gap: 16px; }
+
+.pill {
+  display: flex; align-items: center; gap: 9px;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 6px 16px;
+  background: rgba(8,10,12,.6); backdrop-filter: blur(12px);
+  font: 400 10px/1 var(--mono); letter-spacing: .3em; color: var(--state);
+}
+.pill__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--state); animation: breathe 1.8s ease-in-out infinite; }
+.pill--guard { color: var(--hud-amber); border-color: rgba(240,179,102,.4); letter-spacing: .26em; }
+.pill--guard .pill__dot { background: var(--hud-amber); }
+.pill--unguarded { color: var(--hud-red); border-color: rgba(240,98,91,.45); }
+.pill--unguarded .pill__dot { background: var(--hud-red); }
+.hud__clock { font: 400 12px/1 var(--mono); letter-spacing: .06em; color: rgba(233,238,241,.72); white-space: nowrap; }
+
+/* --------------------------------------------------------------- reading strip */
+.strip {
+  position: absolute; top: 58px; left: 96px; right: var(--chrome-right); z-index: 6;
+  overflow: hidden; transition: right .55s cubic-bezier(.16,.84,.24,1);
+}
+.strip__inner {
+  display: inline-flex; border: 1px solid rgba(255,255,255,.07); border-top: none;
+  border-radius: 0 0 3px 3px; background: rgba(6,8,10,.6); backdrop-filter: blur(10px);
+  font: 400 10px/1 var(--mono); max-width: 100%; overflow-x: auto;
+}
+.strip__cell {
+  display: flex; align-items: baseline; gap: 6px; padding: 7px 13px; white-space: nowrap;
+  border-right: 1px solid rgba(255,255,255,.07);
+}
+.strip__cell:last-child { border-right: 0; }
+.strip__label { letter-spacing: .2em; color: var(--hud-dim); }
+.strip__value { font-variant-numeric: tabular-nums; color: var(--hud-ink); }
+.strip__unit { margin-left: 2px; font-size: 9px; color: var(--hud-dim); }
+/* A gap keeps its cell and says so. The hatch is the panel signature for "no reading". */
+.strip .void { min-height: 0; padding: 0 6px; background-image: var(--hatch); border: 0; }
+.strip .void__label { font: 400 9px/1.2 var(--mono); color: var(--hud-dim); }
+.strip .void__reason { display: none; }
+
+/* --------------------------------------------------------------- left rail */
+.hud__rail {
+  position: absolute; top: 0; left: 0; bottom: 0; width: var(--rail-w); z-index: 7;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 0 18px;
+  border-right: 1px solid rgba(255,255,255,.07);
+  background: rgba(4,6,7,.62); backdrop-filter: blur(14px);
+}
+.hud__sigil {
+  width: 30px; height: 30px; display: grid; place-items: center; margin-bottom: 22px;
+  border: 1px solid rgba(111,227,200,.45); border-radius: 6px;
+  color: var(--hud-teal); font: 400 13px/1 var(--mono);
+}
+.rail-key {
+  position: relative; width: 46px; height: 44px; display: grid; place-items: center;
+  background: none; border: none; color: rgba(233,238,241,.5); cursor: pointer;
+  font: 400 17px/1 var(--sans); transition: color .18s ease;
+}
+.rail-key:hover, .rail-key:focus-visible { color: var(--hud-ink); }
+.rail-key--active { color: var(--hud-ink); }
+.rail-key__marker {
+  position: absolute; left: 0; top: 11px; bottom: 11px; width: 2px;
+  background: var(--hud-teal); opacity: 0; transition: opacity .2s ease;
+}
+.rail-key--active .rail-key__marker { opacity: 1; }
+.rail-key__name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.hud__rail-spacer { flex: 1; }
+
+/* --------------------------------------------------------------- stage and core */
+.hud__stage { position: absolute; inset: 0; }
+.orb { position: absolute; inset: 0; }
+.orb__canvas { width: 100%; height: 100%; display: block; }
+.hud--stale .orb { opacity: .68; }
+
+/* --------------------------------------------------------------- caption stack */
+.caption-stack {
+  position: absolute; left: var(--rail-w); right: var(--chrome-right); bottom: 104px; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; gap: 13px;
+  padding: 0 48px; pointer-events: none;
+  transition: right .55s cubic-bezier(.16,.84,.24,1);
+}
+.caption__vu { display: flex; align-items: flex-end; gap: 3px; height: 13px; opacity: .14; }
+.caption__vu span { width: 3px; height: 100%; background: var(--hud-teal); transform-origin: bottom; animation: vu .82s ease-in-out infinite; }
+.caption__vu span:nth-child(2) { animation-delay: .14s; }
+.caption__vu span:nth-child(3) { animation-delay: .28s; }
+.caption__vu span:nth-child(4) { animation-delay: .42s; }
+.caption__vu span:nth-child(5) { animation-delay: .56s; }
+.caption__vu--listening { opacity: .55; }
+.caption__vu--speaking { opacity: 1; }
+.caption__mark { margin: 0; font: 400 12px/1 var(--mono); letter-spacing: .5em; color: rgba(233,238,241,.82); text-shadow: 0 0 22px rgba(111,227,200,.5); }
+.caption__kicker { margin: 6px 0 0; font: 400 9px/1 var(--mono); letter-spacing: .34em; color: var(--hud-dim); }
+.caption__text {
+  margin: 0; max-width: min(820px, 100%); text-align: center; text-wrap: pretty;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+  font-size: 30px; font-weight: 400; line-height: 1.34; letter-spacing: -.012em; color: #fff;
+  text-shadow: 0 0 34px rgba(255,255,255,.22), 0 0 90px rgba(111,227,200,.12);
+}
+/* Alarm states borrow the caption, because they are the one thing worth reading over the core. */
+.caption__text--alarm { color: var(--hud-red); text-shadow: none; font-size: 22px; }
+.caption__text--waiting, .caption__text--stale { color: var(--hud-amber); text-shadow: none; font-size: 22px; }
+
+/* --------------------------------------------------------------- control bar */
+.controls {
+  position: absolute; left: var(--rail-w); right: var(--chrome-right); bottom: 22px; z-index: 8;
+  display: flex; justify-content: center;
+  transition: right .55s cubic-bezier(.16,.84,.24,1);
+}
+.controls__group {
+  display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px;
+  max-width: 100%; margin: 0 14px; padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.1); border-radius: 26px;
+  background: rgba(6,8,10,.72); backdrop-filter: blur(16px);
+}
+.controls__divider { width: 1px; height: 26px; background: rgba(255,255,255,.1); }
+.controls__chip {
+  font: 400 9px/1 var(--mono); letter-spacing: .2em; padding: 7px 12px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12); background: none; color: rgba(233,238,241,.75); cursor: pointer;
+  transition: color .18s ease, background-color .18s ease;
+}
+.controls__chip:hover, .controls__chip:focus-visible { color: #fff; background: rgba(255,255,255,.06); }
+.controls__chip--on { color: var(--hud-teal); border-color: rgba(111,227,200,.5); background: rgba(111,227,200,.1); }
+.controls__reading { font: 400 9px/1 var(--mono); letter-spacing: .2em; color: var(--hud-dim); padding: 0 4px; }
+
+/* --------------------------------------------------------------- dock */
+.dock {
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--dock-w); z-index: 9;
+  display: flex; flex-direction: column;
+  border-left: 1px solid rgba(255,255,255,.09);
+  background: rgba(5,7,9,.66); backdrop-filter: blur(22px);
+  box-shadow: -30px 0 80px rgba(0,0,0,.55);
+  transform: translateX(102%);
+  transition: transform .55s cubic-bezier(.16,.84,.24,1);
+}
+.dock--open { transform: translateX(0); }
+.dock__head {
+  display: flex; align-items: center; gap: 14px; height: 58px; padding: 0 18px;
+  border-bottom: 1px solid rgba(255,255,255,.08); flex: none;
+}
+.dock__title { margin: 0; font: 400 10px/1 var(--mono); letter-spacing: .22em; color: #fff; }
+.dock__close {
+  width: 26px; height: 26px; margin-left: auto; display: grid; place-items: center;
+  background: none; border: 1px solid rgba(255,255,255,.14); border-radius: 4px;
+  color: rgba(233,238,241,.6); cursor: pointer;
+}
+.dock__close:hover, .dock__close:focus-visible { color: #fff; }
+.dock__body { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 18px; }
+.dock .panel, .dock .provider, .dock .memory, .dock .declared, .dock .trust-control, .dock .trust-banner {
+  margin: 0; background: rgba(255,255,255,.025); border-color: var(--hud-rule);
+}
+.dock .provider, .dock .memory, .dock .declared { padding: 14px; }
+.dock .metric__value { font-size: 30px; color: var(--hud-ink); }
+.dock .metric__value--signal { color: var(--hud-teal); }
+.dock .gauge__fill { background: var(--hud-teal); }
+.dock .button { background: rgba(111,227,200,.1); border-color: rgba(111,227,200,.4); color: var(--hud-teal); }
+
+/* --------------------------------------------------------------- dock tabs */
+.dock__tab {
+  position: relative; font: 400 10px/1 var(--mono); letter-spacing: .22em; padding: 19px 2px;
+  background: none; border: none; color: #fff; cursor: pointer; opacity: .4;
+  transition: opacity .18s ease;
+}
+.dock__tab::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: var(--hud-teal);
+}
+.dock__tab:hover, .dock__tab:focus-visible { opacity: .8; }
+.dock__tab--active { opacity: 1; }
+.dock__head-space { flex: 1; }
+
+/* --------------------------------------------------------------- strip dot */
+.strip__dot {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--hud-teal); align-self: center;
+}
+
+/* --------------------------------------------------------------- rail icons */
+.rail-key svg { display: block; }
+
+/* --------------------------------------------------------------- system meters */
+.meters { display: flex; flex-direction: column; gap: 18px; }
+.meter { display: flex; flex-direction: column; gap: 8px; }
+.meter__row { display: flex; align-items: baseline; justify-content: space-between; }
+.meter__label { font: 400 9px/1 var(--mono); letter-spacing: .28em; color: rgba(233,238,241,.45); }
+.meter__value { font: 400 13px/1 var(--mono); font-variant-numeric: tabular-nums; color: #e9eef1; }
+.meter__unit { font-size: 9px; letter-spacing: .14em; color: rgba(233,238,241,.4); }
+.meter__track {
+  height: 2px; background: rgba(255,255,255,.09); position: relative; overflow: hidden;
+}
+.meter__fill {
+  position: absolute; left: 0; top: 0; bottom: 0; background: var(--hud-teal);
+  transition: width .6s ease;
+}
+/* A missing measurement keeps its row and hatches the track; it never reads as zero width. */
+.meter--void .meter__track { background-image: var(--hatch); border: 1px solid var(--hud-rule); }
+
+/* --------------------------------------------------------------- dock sections */
+.dock-section { display: flex; flex-direction: column; gap: 14px; }
+.dock-section__title {
+  margin: 0; font: 400 9px/1 var(--mono); letter-spacing: .3em; color: rgba(233,238,241,.4);
+}
+
+/* --------------------------------------------------------------- guard note */
+.guard-note {
+  border: 1px solid rgba(240,179,102,.32); border-radius: 5px; padding: 13px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.guard-note__title {
+  margin: 0; font: 400 9px/1 var(--mono); letter-spacing: .28em; color: var(--hud-amber);
+}
+.guard-note__text { margin: 0; font-size: 12.5px; line-height: 1.5; color: rgba(233,238,241,.78); }
+
+/* --------------------------------------------------------------- push to talk */
+.controls__talk {
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  border: 1px solid rgba(111,227,200,.5); background: rgba(111,227,200,.1);
+  color: var(--hud-teal); cursor: not-allowed; opacity: .45;
+}
+
+/* --------------------------------------------------------------- browser panel */
+.browser { border: 1px solid rgba(255,255,255,.12); border-radius: 6px; overflow: hidden; background: #000; }
+.browser__bar {
+  display: flex; align-items: center; gap: 9px; padding: 9px 11px;
+  border-bottom: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.03);
+}
+.browser__lights { display: flex; gap: 5px; }
+.browser__light { width: 8px; height: 8px; border-radius: 50%; }
+.browser__light--red { background: #f0625b; }
+.browser__light--amber { background: #f0b366; }
+.browser__light--teal { background: #6fe3c8; }
+.browser__url {
+  flex: 1; font: 400 9.5px/1 var(--mono); letter-spacing: .06em; color: rgba(233,238,241,.62);
+  border: 1px solid rgba(255,255,255,.1); border-radius: 999px; padding: 4px 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.browser__code { font: 400 9px/1 var(--mono); letter-spacing: .16em; color: var(--hud-teal); }
+.browser__frame {
+  height: 286px; display: grid; place-items: center; padding: 0 24px;
+  background: repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 8px, transparent 8px 16px);
+}
+.browser__empty {
+  margin: 0; font: 400 9px/1.6 var(--mono); letter-spacing: .2em; text-align: center;
+  color: rgba(233,238,241,.35);
+}
+
+/* --------------------------------------------------------------- media panel */
+.plates { display: flex; flex-direction: column; gap: 14px; }
+.plate { border: 1px solid rgba(255,255,255,.1); border-radius: 6px; overflow: hidden; }
+.plate__image {
+  height: 190px; display: grid; place-items: center;
+  background: repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 8px, transparent 8px 16px);
+}
+.plate__tag { font: 400 9px/1 var(--mono); letter-spacing: .26em; color: rgba(233,238,241,.35); }
+.plate__caption {
+  display: flex; align-items: baseline; justify-content: space-between; padding: 11px 13px;
+  border-top: 1px solid rgba(255,255,255,.09);
+}
+.plate__caption p { margin: 0; font-size: 13px; }
+.plate__meta { font: 400 9px/1 var(--mono); letter-spacing: .2em; color: rgba(233,238,241,.4); }
+.plates__pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.plate__image--small { height: 118px; }
+.plate__label {
+  margin: 0; padding: 9px 11px; border-top: 1px solid rgba(255,255,255,.09);
+  font: 400 9px/1 var(--mono); letter-spacing: .2em; color: rgba(233,238,241,.5);
+}
+
+/* --------------------------------------------------------------- link status inside the dock */
+.dock .rail {
+  margin: 0; background: rgba(255,255,255,.025); border: 1px solid var(--hud-rule);
+  border-left-width: 3px; padding: 14px 16px; gap: 16px;
+}
+.dock .rail--stale { background-image: var(--hatch); }
+.dock .rail__verdict { font-size: 20px; color: var(--hud-teal); }
+.dock .rail--stale .rail__verdict { color: var(--hud-dim); }
+.dock .rail__reason { color: rgba(233,238,241,.55); }
+.dock .counters { border-top-color: var(--hud-rule); }
+
+/* --------------------------------------------------------------- tool log */
+.toollog { display: flex; flex-direction: column; gap: 7px; font: 400 11px/1.4 var(--mono); }
+.toollog__row {
+  display: flex; gap: 11px; align-items: baseline; padding: 8px 10px;
+  border: 1px solid rgba(255,255,255,.07); border-radius: 4px; background: rgba(255,255,255,.015);
+  animation: fadeUp .32s ease both;
+}
+.toollog__at { color: rgba(233,238,241,.35); font-variant-numeric: tabular-nums; }
+.toollog__tool { color: var(--hud-teal); }
+.toollog__msg { flex: 1; font-family: var(--sans); font-size: 11.5px; color: rgba(233,238,241,.72); overflow-wrap: anywhere; }
+.toollog__status { font-size: 9px; letter-spacing: .14em; color: var(--hud-teal); }
+.toollog__row--running .toollog__tool, .toollog__row--running .toollog__status { color: var(--hud-amber); }
+.toollog__row--failed .toollog__tool, .toollog__row--failed .toollog__status { color: var(--hud-red); }
+.toollog__empty { margin: 0; color: var(--hud-dim); font-size: 12.5px; line-height: 1.6; font-family: var(--sans); }
+
+@keyframes vu { 0%, 100% { transform: scaleY(.2); } 50% { transform: scaleY(1); } }
+@keyframes caret { 0%, 45% { opacity: .9; } 46%, 100% { opacity: 0; } }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes breathe { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+.caption__caret { color: var(--hud-teal); font-weight: 200; animation: caret 1.05s step-end infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .caption__vu span, .pill__dot, .caption__caret, .toollog__row { animation: none; }
+  .hud__top, .strip, .caption-stack, .controls, .dock { transition: none; }
+}
+
+/* The strip is the first thing to go: it is the most compressible chrome on the page, and the
+ * caption is the least - it is the only element here carrying the brain's own words. */
+@media (max-width: 1100px) {
+  .strip__cell--roomy { display: none; }
+  .hud__clock { display: none; }
+}
+@media (max-width: 760px) {
+  .hud { --dock-w: min(472px, 92vw); }
+  .hud--dock-open { --chrome-right: 0px; }
+  .hud__top { padding-left: 88px; }
+  .caption__text { font-size: 20px; -webkit-line-clamp: 4; }
+  .caption-stack { bottom: 118px; padding: 0 18px; }
+}

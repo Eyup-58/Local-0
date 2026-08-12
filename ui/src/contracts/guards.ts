@@ -24,6 +24,8 @@ import {
   type ServerMessage,
   type SideEffect,
   type TelemetryPayload,
+  type ToolLogStatus,
+  type TurnStateName,
   type WsErrorCode,
 } from "./types";
 
@@ -50,6 +52,16 @@ const ORIGINS: readonly Origin[] = ["user_direct", "untrusted_content"];
 
 const APPROVAL_OUTCOMES: readonly ApprovalOutcome[] = ["approved", "rejected", "expired", "auto_approved"];
 
+const TURN_STATES: readonly TurnStateName[] = [
+  "idle",
+  "listening",
+  "thinking",
+  "tool_running",
+  "speaking",
+];
+
+const TOOL_LOG_STATUSES: readonly ToolLogStatus[] = ["running", "ok", "failed"];
+
 const ENVELOPE_FIELDS = ["v", "id", "ts", "type", "payload"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,6 +78,11 @@ function isPercent(value: unknown): value is number | null {
 
 function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+/** Prose that is either absent or actually says something. `""` is neither, so it is refused. */
+function isNullableProse(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length > 0);
 }
 
 /** Requires exactly the five envelope fields: no fewer, and crucially no more. */
@@ -285,6 +302,41 @@ function validatePayload(type: string, payload: unknown): string | null {
       }
       if (typeof payload.embeddings_available !== "boolean") {
         return "memory.status embeddings_available is not a boolean";
+      }
+      return null;
+    }
+
+    case "turn.state": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["state", "since", "caption", "detail"])) {
+        return "turn.state payload has unexpected fields";
+      }
+      if (!isString(payload.state) || !TURN_STATES.includes(payload.state as TurnStateName)) {
+        return "turn.state state is unknown";
+      }
+      if (!isString(payload.since)) return "turn.state since is not a string";
+      // Empty prose is refused rather than coerced to null. The contract has one spelling for
+      // silence, and accepting a second one here would let a blank caption render as a blank line
+      // the user cannot tell apart from a caption that failed to arrive.
+      if (!isNullableProse(payload.caption)) return "turn.state caption is malformed";
+      if (!isNullableProse(payload.detail)) return "turn.state detail is malformed";
+      return null;
+    }
+
+    case "tool.log": {
+      if (!isRecord(payload)) return "payload is not an object";
+      if (!hasExactKeys(payload, ["at", "capability", "message", "status"])) {
+        return "tool.log payload has unexpected fields";
+      }
+      if (!isString(payload.at)) return "tool.log at is not a string";
+      if (!isString(payload.capability) || payload.capability.length === 0) {
+        return "tool.log capability is empty";
+      }
+      if (!isString(payload.message) || payload.message.length === 0) return "tool.log message is empty";
+      if (!isString(payload.status) || !TOOL_LOG_STATUSES.includes(payload.status as ToolLogStatus)) {
+        // Not bucketed into the nearest-looking status: the nearest-looking one is "ok", and that
+        // would paint a failed call green.
+        return "tool.log status is unknown";
       }
       return null;
     }

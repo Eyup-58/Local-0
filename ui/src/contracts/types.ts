@@ -193,6 +193,48 @@ export type MemoryStatus = Envelope<
   }
 >;
 
+/**
+ * What the brain is doing in the current conversational turn.
+ *
+ * Reported, never inferred. There is no timer in this UI that advances it and no elapsed-time
+ * heuristic that guesses the next one — a panel that decided for itself the brain was "probably
+ * speaking by now" would be narrating, which is the one thing this HUD does not do.
+ */
+export type TurnStateName = "idle" | "listening" | "thinking" | "tool_running" | "speaking";
+
+export type TurnState = Envelope<
+  "turn.state",
+  {
+    readonly state: TurnStateName;
+    readonly since: string;
+    /**
+     * What the brain is saying, in its own words, or null when it has nothing to say. Null is a
+     * gap and it renders as one: no greeting, no status line, no filler substituted for silence.
+     */
+    readonly caption: string | null;
+    /** A short label for what the state is about, or null. Same rule — null renders as nothing. */
+    readonly detail: string | null;
+  }
+>;
+
+/** `running` is not terminal. Nothing may treat it as a finished call. */
+export type ToolLogStatus = "running" | "ok" | "failed";
+
+export type ToolLog = Envelope<
+  "tool.log",
+  {
+    readonly at: string;
+    readonly capability: string;
+    /**
+     * May paraphrase content the brain fetched, so this is untrusted text by docs/SECURITY.md
+     * section 2. It is safe to display because React renders it as text and this repository
+     * imports no markdown or HTML renderer — `bans.test.ts` is what keeps that true.
+     */
+    readonly message: string;
+    readonly status: ToolLogStatus;
+  }
+>;
+
 /** Everything the brain may send to the UI. */
 export type ServerMessage =
   | ServerHello
@@ -203,4 +245,6 @@ export type ServerMessage =
   | ApprovalResolved
   | TrustStatus
   | ProviderStatus
-  | MemoryStatus;
+  | MemoryStatus
+  | TurnState
+  | ToolLog;

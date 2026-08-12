@@ -44,7 +44,7 @@ from local_zero_brain.net.egress import EgressGuard
 from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
 from local_zero_brain.ws.hub import UiHub
-from local_zero_brain.ws.messages import WsMessageFactory
+from local_zero_brain.ws.messages import WsMessageFactory, utc_now
 
 #: Loopback only. See the module docstring.
 BIND_HOST = "127.0.0.1"
@@ -308,6 +308,11 @@ async def _complete_handshake(websocket: WebSocket, services: BrainServices) -> 
     await websocket.send_json(_provider_frame(services))
     await websocket.send_json(_memory_frame(services))
 
+    # Last of the state frames. Idle with no caption, because at connect nothing is running and the
+    # brain keeps no record of a turn that began before this socket existed. Sent explicitly rather
+    # than left to a UI default: the tab is told what the state is, it does not assume one.
+    await websocket.send_json(services.messages.turn_state(state="idle", since=utc_now()))
+
     return True
 
 
@@ -436,6 +441,20 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
     """
     services.guard.audit_decision(pending, decision="allowed", reason="approved by the user")
 
+    name = pending.capability.name
+
+    # The run is announced before it starts and closed out after. These frames are the only way the
+    # UI learns a capability ran: it infers nothing from elapsed time, so a run the brain does not
+    # report is a run the panel does not draw. Announcing the start separately is what lets a slow
+    # handler show as running rather than as nothing at all until it finishes.
+    started = utc_now()
+    await services.hub.broadcast(
+        services.messages.turn_state(state="tool_running", since=started, detail=name)
+    )
+    await services.hub.broadcast(
+        services.messages.tool_log(at=started, capability=name, message="Started.", status="running")
+    )
+
     try:
         await asyncio.to_thread(pending.capability.handler, **pending.resolved_args)
     except Exception as error:  # noqa: BLE001 - a handler may raise anything; none of it may escape
@@ -443,14 +462,31 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
         # not be silent about. Letting it propagate would tear down the socket and the UI would
         # reconnect showing nothing wrong, which is the failure mode the whole panel is built to
         # avoid. The class name, not the message: an exception's text can carry a path.
-        services.log(f"capability {pending.capability.name} failed: {type(error).__name__}")
+        services.log(f"capability {name} failed: {type(error).__name__}")
+        failed_at = utc_now()
+        await services.hub.broadcast(
+            services.messages.tool_log(
+                at=failed_at,
+                capability=name,
+                message=f"Failed with {type(error).__name__}.",
+                status="failed",
+            )
+        )
+        await services.hub.broadcast(services.messages.turn_state(state="idle", since=failed_at))
         await services.hub.broadcast(
             services.messages.error(
                 code="internal_error",
-                message=f"{pending.capability.name} was approved but did not complete. "
+                message=f"{name} was approved but did not complete. "
                 f"It failed with {type(error).__name__}. Nothing further was attempted.",
             )
         )
+        return
+
+    finished = utc_now()
+    await services.hub.broadcast(
+        services.messages.tool_log(at=finished, capability=name, message="Completed.", status="ok")
+    )
+    await services.hub.broadcast(services.messages.turn_state(state="idle", since=finished))
 
 
 async def _apply_trust(services: BrainServices, message: TrustSet) -> None:

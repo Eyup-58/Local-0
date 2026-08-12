@@ -339,6 +339,56 @@ class MemoryReindex(ContractModel):
     payload: MemoryReindexPayload
 
 
+#: What the brain is doing in the current conversational turn.
+#:
+#: Reported, never inferred. The UI has no timer that advances this and no default that fills it in,
+#: which is the same rule trust and provider mode follow: a panel that decided for itself that the
+#: brain was "probably speaking by now" would be narrating, and CLAUDE.md invariant 10 forbids
+#: exactly that kind of plausible-looking placeholder.
+TurnStateName = Literal["idle", "listening", "thinking", "tool_running", "speaking"]
+
+#: running is not terminal. Nothing may conclude a turn on the strength of it.
+ToolLogStatus = Literal["running", "ok", "failed"]
+
+
+class TurnStatePayload(ContractModel):
+    state: TurnStateName
+    since: Timestamp
+    #: What the brain is saying, in its own words, or None when it has nothing to say. None is a gap
+    #: and the UI renders it as one - it does not substitute a greeting or filler. min_length 1 keeps
+    #: "" from becoming a second way to spell silence that renders as a blank line instead.
+    caption: Annotated[str, Field(min_length=1, max_length=2000)] | None
+    #: A short label for what the state is about - the capability running, the device listened on.
+    detail: Annotated[str, Field(min_length=1, max_length=120)] | None
+
+
+class TurnState(ContractModel):
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["turn.state"]
+    payload: TurnStatePayload
+
+
+class ToolLogPayload(ContractModel):
+    at: Timestamp
+    #: The registered capability name as the guard's step 1 knows it, not a name the model chose.
+    capability: Annotated[str, Field(min_length=1, max_length=120)]
+    #: MAY paraphrase content the brain fetched, which makes it untrusted text by docs/SECURITY.md
+    #: section 2. It is safe to display because the UI renders it as text and it never reaches the
+    #: planner; nothing that reads it may treat it as an instruction.
+    message: Annotated[str, Field(min_length=1, max_length=500)]
+    status: ToolLogStatus
+
+
+class ToolLog(ContractModel):
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["tool.log"]
+    payload: ToolLogPayload
+
+
 WsMessage = Annotated[
     ClientHello
     | ServerHello
@@ -354,7 +404,9 @@ WsMessage = Annotated[
     | ProviderSelect
     | CredentialSet
     | MemoryStatus
-    | MemoryReindex,
+    | MemoryReindex
+    | TurnState
+    | ToolLog,
     Field(discriminator="type"),
 ]
 

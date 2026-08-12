@@ -5,7 +5,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { initialState, isStale, telemetryReducer, type TelemetryState } from "./reducer";
+import {
+  initialState,
+  isStale,
+  telemetryReducer,
+  TOOL_LOG_LIMIT,
+  type TelemetryState,
+} from "./reducer";
 
 const EXAMPLES = join(import.meta.dirname, "..", "..", "..", "contracts", "examples");
 
@@ -204,5 +210,126 @@ describe("the network boundary", () => {
 
     expect(state.providerMode).toBe(before.providerMode);
     expect(state.droppedFrames).toBe(before.droppedFrames + 1);
+  });
+});
+
+const turnState = example("ws.turn-state.json");
+const turnStateSilent = example("ws.turn-state-silent.json");
+const toolLog = example("ws.tool-log.json");
+
+describe("turn state", () => {
+  it("starts idle and silent, before the brain has said anything", () => {
+    expect(initialState.turn).toBe("idle");
+    expect(initialState.caption).toBeNull();
+    expect(initialState.toolLog).toEqual([]);
+    expect(initialState.turnCount).toBe(0);
+    expect(initialState.toolCalls).toBe(0);
+  });
+
+  it("takes the reported state rather than inferring one", () => {
+    const state = frame(connected(), turnState);
+
+    expect(state.turn).toBe("speaking");
+    expect(state.caption).toBe((turnState.payload as { caption: string }).caption);
+  });
+
+  it("keeps a null caption null, rather than substituting filler for silence", () => {
+    const spoke = frame(connected(), turnState);
+    const state = frame(spoke, turnStateSilent);
+
+    expect(state.turn).toBe("listening");
+    expect(state.caption).toBeNull();
+    expect(state.turnDetail).toBeNull();
+  });
+
+  it("holds the last reported state when the brain stops reporting", () => {
+    // No timer advances the turn, so a silent brain leaves the core where it was rather than
+    // letting the panel decide the turn has moved on.
+    const state = frame(frame(connected(), turnState), telemetrySample, 2_000);
+
+    expect(state.turn).toBe("speaking");
+  });
+
+  it("drops a frame whose state is not one the contract names", () => {
+    const before = connected();
+
+    const state = frame(before, {
+      ...turnState,
+      payload: { ...(turnState.payload as object), state: "daydreaming" },
+    });
+
+    expect(state.turn).toBe(before.turn);
+    expect(state.droppedFrames).toBe(before.droppedFrames + 1);
+  });
+
+  it("drops an empty caption rather than rendering it as a blank line", () => {
+    const before = connected();
+
+    const state = frame(before, {
+      ...turnState,
+      payload: { ...(turnState.payload as object), caption: "" },
+    });
+
+    expect(state.droppedFrames).toBe(before.droppedFrames + 1);
+  });
+
+  it("counts a turn only when a reported non-idle state returns to idle", () => {
+    const started = frame(connected(), turnState);
+
+    expect(started.turn).toBe("speaking");
+    expect(started.turnCount).toBe(0);
+
+    const finished = frame(started, {
+      ...turnState,
+      payload: { ...(turnState.payload as object), state: "idle" },
+    });
+
+    expect(finished.turnCount).toBe(1);
+  });
+});
+
+describe("tool log", () => {
+  it("records a reported call, newest first", () => {
+    const state = frame(frame(connected(), toolLog), {
+      ...toolLog,
+      payload: { ...(toolLog.payload as object), capability: "net.fetch" },
+    });
+
+    expect(state.toolLog).toHaveLength(2);
+    expect(state.toolLog[0]?.capability).toBe("net.fetch");
+  });
+
+  it("does not round an unknown status up to ok", () => {
+    const before = connected();
+
+    const state = frame(before, {
+      ...toolLog,
+      payload: { ...(toolLog.payload as object), status: "done" },
+    });
+
+    expect(state.toolLog).toEqual([]);
+    expect(state.droppedFrames).toBe(before.droppedFrames + 1);
+  });
+
+  it("caps the log rather than growing without bound", () => {
+    let state = connected();
+    for (let index = 0; index < TOOL_LOG_LIMIT + 12; index += 1) {
+      state = frame(state, { ...toolLog, payload: { ...(toolLog.payload as object), message: `line ${index}` } });
+    }
+
+    expect(state.toolLog).toHaveLength(TOOL_LOG_LIMIT);
+    expect(state.toolLog[0]?.message).toBe(`line ${TOOL_LOG_LIMIT + 11}`);
+  });
+
+  it("counts calls that start, not the lines that close them", () => {
+    // The example line closes an ok call; the running line is the one that opens a call.
+    const closed = frame(connected(), toolLog);
+    const state = frame(closed, {
+      ...toolLog,
+      payload: { ...(toolLog.payload as object), status: "running" },
+    });
+
+    expect(closed.toolCalls).toBe(0);
+    expect(state.toolCalls).toBe(1);
   });
 });

@@ -8,15 +8,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { displacement, project, spherePoints } from "./Orb";
+import { coreLayout, displacement, lerpColour, project, spherePoints } from "./Orb";
 
 describe("spherePoints", () => {
-  it("returns the number of points it was asked for", () => {
-    expect(spherePoints(64)).toHaveLength(64);
+  it("returns one point per column on every ring, poles included", () => {
+    // rows + 1 rings: the poles are rings of their own, not the gaps between rings.
+    expect(spherePoints(4, 8)).toHaveLength((4 + 1) * 8);
   });
 
   it("places every point on the unit sphere", () => {
-    const offSurface = spherePoints(200).filter((point) => {
+    const offSurface = spherePoints(12, 24).filter((point) => {
       const length = Math.hypot(point.x, point.y, point.z);
       return Math.abs(length - 1) > 1e-9;
     });
@@ -25,14 +26,108 @@ describe("spherePoints", () => {
   });
 
   it("spreads points across both poles rather than bunching at one", () => {
-    const heights = spherePoints(200).map((point) => point.y);
+    const heights = spherePoints(12, 24).map((point) => point.y);
 
     expect(Math.min(...heights)).toBeCloseTo(-1, 6);
     expect(Math.max(...heights)).toBeCloseTo(1, 6);
   });
 
-  it("does not divide by zero for a single point", () => {
-    expect(spherePoints(1)).toEqual([{ x: 1, y: 0, z: 0 }]);
+  it("returns an empty shell for a zero-column request rather than dividing by zero", () => {
+    expect(spherePoints(12, 0)).toEqual([]);
+  });
+});
+
+describe("lerpColour", () => {
+  const blue = [111, 123, 255] as const;
+  const teal = [111, 227, 200] as const;
+
+  it("stays put at zero", () => {
+    expect(lerpColour(blue, teal, 0)).toEqual([...blue]);
+  });
+
+  it("arrives at one", () => {
+    expect(lerpColour(blue, teal, 1)).toEqual([...teal]);
+  });
+
+  it("lands halfway at a half", () => {
+    expect(lerpColour(blue, teal, 0.5)).toEqual([111, 175, 227.5]);
+  });
+});
+
+describe("coreLayout", () => {
+  it("centres the core in the space right of the rail", () => {
+    // 1400 wide, 74 of it rail: the free stage is 74..1400, whose middle is 737 - which is 37 right
+    // of the window's own middle.
+    expect(coreLayout(1400, 900, false, false).offsetX).toBeCloseTo(37, 6);
+  });
+
+  it("moves the core left, not right, when the dock opens", () => {
+    const open = coreLayout(1400, 900, true, false);
+    const shut = coreLayout(1400, 900, false, false);
+
+    expect(open.offsetX).toBeLessThan(shut.offsetX);
+  });
+
+  it("shrinks the core rather than letting the dock cover it, once width is what binds", () => {
+    // Tall and narrow, so the free width is the limit. On a wide screen the core is already
+    // height-limited and the dock only moves it - which is why this picks a shape where the
+    // shrinking is the visible behaviour.
+    const open = coreLayout(1000, 1400, true, false);
+    const shut = coreLayout(1000, 1400, false, false);
+
+    expect(open.radius).toBeLessThan(shut.radius);
+  });
+
+  it("never grows the core when the dock opens, whatever the shape of the window", () => {
+    const shapes: readonly (readonly [number, number])[] = [
+      [1400, 900],
+      [1000, 1400],
+      [1920, 1080],
+      [800, 600],
+    ];
+
+    for (const [width, height] of shapes) {
+      const open = coreLayout(width, height, true, false);
+      const shut = coreLayout(width, height, false, false);
+
+      expect(open.radius).toBeLessThanOrEqual(shut.radius);
+    }
+  });
+
+  it("shrinks the core to clear a caption instead of drawing underneath it", () => {
+    // The decisive one: the mockup's core swallowed its own caption at this size. The reserved band
+    // below the core is what keeps the brain's own words readable.
+    const captioned = coreLayout(1600, 950, false, true);
+    const bare = coreLayout(1600, 950, false, false);
+
+    expect(captioned.radius).toBeLessThan(bare.radius);
+  });
+
+  it("keeps the whole core and its outer ring inside the free stage", () => {
+    const width = 1600;
+    const height = 950;
+    const { radius, offsetX } = coreLayout(width, height, true, true);
+
+    const centre = width / 2 + offsetX;
+    const dock = Math.min(472, width * 0.46);
+
+    expect(centre - radius * 1.42).toBeGreaterThanOrEqual(74);
+    expect(centre + radius * 1.42).toBeLessThanOrEqual(width - dock);
+  });
+
+  it("keeps the core clear of the chrome above and the caption below", () => {
+    const height = 950;
+    const { radius, offsetY } = coreLayout(1600, height, false, true);
+    const centre = height / 2 + offsetY;
+
+    expect(centre - radius).toBeGreaterThanOrEqual(92);
+    expect(centre + radius).toBeLessThanOrEqual(height - 330);
+  });
+
+  it("never returns a negative radius, however little room there is", () => {
+    // A phone in landscape leaves less vertical room than the reserved bands want. Clamping at zero
+    // draws nothing; a negative radius would draw the shell inside out.
+    expect(coreLayout(320, 200, true, true).radius).toBeGreaterThanOrEqual(0);
   });
 });
 

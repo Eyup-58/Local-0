@@ -112,17 +112,19 @@ def test_a_hello_with_an_unimplemented_version_is_refused_as_such(client: TestCl
 
 
 def handshake(socket) -> None:
-    """Completes the opening exchange: client.hello, then server.hello, trust.status, provider.status.
+    """Completes the opening exchange: client.hello, then every state frame the brain opens with.
 
-    Both state messages arrive immediately after the hello for the same reason: a tab that does not
+    The state messages arrive immediately after the hello for the same reason: a tab that does not
     yet know approval is off - or that the network boundary is open - would show the safe state while
-    the permissive one is in force, which is the wrong way round to be wrong.
+    the permissive one is in force, which is the wrong way round to be wrong. turn.state is here on
+    the same principle: the tab is told what is running rather than assuming a default.
     """
     socket.send_text(json.dumps(CLIENT_HELLO))
     assert socket.receive_json()["type"] == "server.hello"
     assert socket.receive_json()["type"] == "trust.status"
     assert socket.receive_json()["type"] == "provider.status"
     assert socket.receive_json()["type"] == "memory.status"
+    assert socket.receive_json()["type"] == "turn.state"
 
 
 async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -> None:
@@ -168,10 +170,27 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
     # Must not raise: the failure is reported, not propagated.
     await _execute(services, verdict)
 
-    assert [frame["type"] for frame in sent] == ["error"]
-    assert "did not complete" in sent[0]["payload"]["message"]
+    # The run is reported as it happens: announced, logged as running, then closed out as failed and
+    # returned to idle before the error itself. The UI infers none of this from elapsed time.
+    assert [frame["type"] for frame in sent] == [
+        "turn.state",
+        "tool.log",
+        "tool.log",
+        "turn.state",
+        "error",
+    ]
+    assert sent[0]["payload"]["state"] == "tool_running"
+    assert sent[1]["payload"]["status"] == "running"
+    # A failed handler is reported as failed. Rounding it up to ok would paint the row green.
+    assert sent[2]["payload"]["status"] == "failed"
+    assert sent[3]["payload"]["state"] == "idle"
+
+    error = sent[-1]
+    assert "did not complete" in error["payload"]["message"]
     # The class name reaches the user; the exception's text does not, because it can carry a path.
-    assert str(workspace) not in sent[0]["payload"]["message"]
+    assert str(workspace) not in error["payload"]["message"]
+    # And it does not reach the log line either, which is the other place a path could leak.
+    assert all(str(workspace) not in json.dumps(frame) for frame in sent)
 
 
 def test_trust_state_is_reported_immediately_after_the_handshake(client: TestClient) -> None:

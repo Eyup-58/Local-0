@@ -13,6 +13,8 @@ import type {
   ProviderMode,
   SensorCapability,
   TelemetryPayload,
+  ToolLog,
+  TurnStateName,
 } from "../contracts/types";
 
 export type LinkState = "connecting" | "open" | "closed";
@@ -58,7 +60,35 @@ export interface TelemetryState {
   readonly hasKey: boolean;
   /** What the brain has loaded from the vault. `enabled: false` means memory is off, not empty. */
   readonly memory: MemoryStatus["payload"];
+  /**
+   * What the brain is doing in the current turn, as the brain reported it.
+   *
+   * Nothing in this UI advances it. No timer, no "it has been 3 seconds so it must be speaking by
+   * now", no transition inferred from a tool log arriving. If the brain stops sending turn.state
+   * the core simply holds its last reported state, which is the honest thing for it to do.
+   */
+  readonly turn: TurnStateName;
+  /** The brain's own words, or null when it has nothing to say. Null renders as nothing. */
+  readonly caption: string | null;
+  /** A short label for what the turn is about, or null. */
+  readonly turnDetail: string | null;
+  readonly turnSince: string | null;
+  /** Turns the brain reported completing: a non-idle state that came back to idle. */
+  readonly turnCount: number;
+  /** Tool calls the brain reported starting. Counts running lines, not ok/failed closers. */
+  readonly toolCalls: number;
+  /** Newest first, capped at TOOL_LOG_LIMIT. Only ever what the brain actually reported running. */
+  readonly toolLog: readonly ToolLog["payload"][];
 }
+
+/**
+ * How many tool log lines the dock keeps.
+ *
+ * The audit log is the complete record; this is a viewport onto the recent end of it. Keeping every
+ * line for the life of the tab would grow without bound in exactly the sessions that are already
+ * busiest.
+ */
+export const TOOL_LOG_LIMIT = 40;
 
 export const initialState: TelemetryState = {
   link: "connecting",
@@ -92,6 +122,16 @@ export const initialState: TelemetryState = {
     last_indexed_at: null,
     embeddings_available: false,
   },
+  // Idle and silent until the brain says otherwise, for the same reason trust starts off: the state
+  // before anything is known has to be the one that claims the least. A core that opened in
+  // "thinking" would be asserting the brain was working before it had heard from it at all.
+  turn: "idle",
+  caption: null,
+  turnDetail: null,
+  turnSince: null,
+  turnCount: 0,
+  toolCalls: 0,
+  toolLog: [],
 };
 
 export type TelemetryAction =
@@ -184,6 +224,31 @@ function applyFrame(state: TelemetryState, raw: string, now: number): TelemetryS
 
     case "memory.status":
       return { ...state, memory: message.payload };
+
+    case "turn.state":
+      return {
+        ...state,
+        turn: message.payload.state,
+        caption: message.payload.caption,
+        turnDetail: message.payload.detail,
+        turnSince: message.payload.since,
+        // A turn is complete when a reported non-idle state comes back to idle. Nothing here
+        // decides a turn ended on its own; only the brain's own frames move the count.
+        turnCount:
+          state.turn !== "idle" && message.payload.state === "idle" ? state.turnCount + 1 : state.turnCount,
+      };
+
+    case "tool.log":
+      // Newest first, and capped. The cap is what stops a long session from turning the dock into
+      // an unbounded array the tab has to keep re-rendering; what fell off the end is in the audit
+      // log, which is the record that is supposed to be complete.
+      return {
+        ...state,
+        toolLog: [message.payload, ...state.toolLog].slice(0, TOOL_LOG_LIMIT),
+        // The running line is the "a call started" one; ok and failed lines close it. Counting
+        // starts keeps the count a count of calls rather than of log lines.
+        toolCalls: message.payload.status === "running" ? state.toolCalls + 1 : state.toolCalls,
+      };
   }
 }
 

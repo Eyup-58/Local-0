@@ -1,23 +1,32 @@
 /**
- * The panel, laid out as a heads-up display: one orb in the middle, readings around it.
+ * The orchestration centre: one core in the middle, chrome pinned to the edges, and a dock that
+ * slides in over the right.
  *
- * The arrangement changed in this pass; the rule underneath it did not. Every value on this page
- * still comes from the sidecar's declaration or its samples, and where a value is missing the
- * reason shown is the sidecar's own words. The orb obeys the same rule - it is driven by real load
- * and sits still and dim when there is none, rather than idling at a plausible-looking zero.
+ * The arrangement is the one the designer mocked up. The rule underneath it is the panel's own and
+ * it did not change: every value on this page comes from the sidecar's declaration, from its
+ * samples, or from a turn the brain reported - and where a value is missing, the reason shown is
+ * the source's own words.
  *
- * What this layout deliberately does *not* borrow from the assistant HUDs it looks like: a caption
- * line that talks. This one reports state. It never says anything the panel did not do.
+ * What this layout deliberately does *not* borrow from the mockup: the demo sequence, the
+ * simulated waveform, the jittered telemetry and the typewriter caption. Each of those invents
+ * something. The demo advances a turn the brain never reported; the jitter draws load nobody
+ * measured; the typewriter shows sentences in an order the brain never sent. The mockup used them
+ * to look alive with no backend attached, which is the right call for a mockup and the wrong one
+ * here.
+ *
+ * The rail is likewise the design's shape but not its contents. The mockup's Browser and Media
+ * entries have no capability behind them in this build, and a rail whose doors open onto "not
+ * built yet" is the rail Hud.tsx warns about. Every entry here opens something real.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { ApprovalDialog } from "./components/ApprovalDialog";
 import { Counters } from "./components/Counters";
 import { CoreGrid } from "./components/CoreGrid";
 import { DeclaredGaps } from "./components/DeclaredGaps";
 import { Gauge } from "./components/Gauge";
-import { Caption, Dock, Rail, ReadingStrip, TopBar } from "./components/Hud";
+import { Caption, Dock, Rail, ReadingStrip, ToolLogList, TopBar } from "./components/Hud";
 import type { LinkTone, RailItem, Reading } from "./components/Hud";
 import { LinkStatus } from "./components/LinkStatus";
 import { MemoryControl } from "./components/MemoryControl";
@@ -27,7 +36,7 @@ import type { OrbMood } from "./components/Orb";
 import { ProviderControl } from "./components/ProviderControl";
 import { TrustControl } from "./components/TrustControl";
 import { formatGibibytes, formatMegahertz, formatPercent, formatUptime, fraction } from "./format";
-import type { SensorCapability, TelemetryPayload } from "./contracts/types";
+import type { SensorCapability, TelemetryPayload, TurnStateName } from "./contracts/types";
 import { isStale } from "./ws/reducer";
 import type { TelemetryState } from "./ws/reducer";
 import { useTelemetry } from "./ws/useTelemetry";
@@ -39,15 +48,97 @@ import { useTelemetry } from "./ws/useTelemetry";
  */
 const NO_DECLARATION = "The system layer has not reported on this sensor.";
 
+/** One 19px line icon, in the mockup's drawing style: 1.3 stroke, no fill, 24-unit box. */
+function icon(path: ReactNode) {
+  return (
+    <svg
+      width="19"
+      height="19"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      aria-hidden="true"
+    >
+      {path}
+    </svg>
+  );
+}
+
 const PANELS: readonly RailItem[] = [
-  { id: "processor", glyph: "▤", title: "Processor" },
-  { id: "graphics", glyph: "◈", title: "Graphics" },
-  { id: "memory", glyph: "▥", title: "Memory" },
-  { id: "cores", glyph: "⠿", title: "Cores" },
-  { id: "model", glyph: "◐", title: "Model" },
-  { id: "vault", glyph: "❖", title: "Vault" },
-  { id: "guard", glyph: "⌘", title: "Guard" },
-  { id: "link", glyph: "⇄", title: "Link" },
+  { id: "tools", title: "Tool log", icon: icon(<path d="M4 5h16v14H4zM7.5 10l2.2 2.2-2.2 2.2M12.5 14.6h4" />) },
+  { id: "processor", title: "Processor", icon: icon(<path d="M3 12h3.5l2-5.5 3 11 2.5-6.5 1.8 3.5H21" />) },
+  {
+    id: "graphics",
+    title: "Graphics",
+    icon: icon(
+      <>
+        <rect x="3.5" y="6.5" width="17" height="11" rx="1.5" />
+        <path d="M7 10.5h3.5M7 13.5h6" />
+      </>,
+    ),
+  },
+  {
+    id: "memory",
+    title: "Memory",
+    icon: icon(
+      <>
+        <rect x="4" y="8" width="16" height="8" rx="1" />
+        <path d="M8 8v8M12 8v8M16 8v8" />
+      </>,
+    ),
+  },
+  {
+    id: "cores",
+    title: "Cores",
+    icon: icon(
+      <>
+        <rect x="7" y="7" width="10" height="10" rx="1" />
+        <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
+      </>,
+    ),
+  },
+  {
+    id: "model",
+    title: "Model",
+    icon: icon(
+      <>
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none" />
+      </>,
+    ),
+  },
+  {
+    id: "vault",
+    title: "Vault",
+    icon: icon(
+      <>
+        <rect x="3.5" y="5.5" width="17" height="13" rx="1.5" />
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 9V7M12 17v-2" />
+      </>,
+    ),
+  },
+  {
+    id: "guard",
+    title: "Guard",
+    icon: icon(
+      <>
+        <path d="M12 3l7 3v5.5c0 4.3-3 7.7-7 9.5-4-1.8-7-5.2-7-9.5V6z" />
+        <path d="M9 12l2.2 2.2L15.5 10" />
+      </>,
+    ),
+  },
+  { id: "link", title: "Link", icon: icon(<path d="M4 9h13l-3-3M20 15H7l3 3" />) },
+];
+
+/** The five reported turns, in the order the control track shows them. */
+const TURN_TRACK: readonly { readonly id: TurnStateName; readonly label: string }[] = [
+  { id: "idle", label: "STANDBY" },
+  { id: "listening", label: "LISTENING" },
+  { id: "thinking", label: "THINKING" },
+  { id: "tool_running", label: "TOOL" },
+  { id: "speaking", label: "SPEAKING" },
 ];
 
 function reasonFor(sensors: readonly SensorCapability[], field: string): string {
@@ -87,10 +178,23 @@ function orbEnergy(sample: TelemetryPayload | null): number | null {
   return Math.min(1, Math.max(cpu ?? 0, gpu ?? 0) / 100);
 }
 
-/** The caption, in priority order. It reports; it does not narrate. */
-function captionFor(state: TelemetryState, stale: boolean): { text: string; tone: LinkTone | "alarm" } {
+/**
+ * What the *panel* needs to say, in priority order, or null when it has nothing.
+ *
+ * This is the panel's own voice and it only ever states fact - what is waiting, what failed, what
+ * is not being measured. Null is the important return: it means the panel steps aside and the
+ * brain's caption shows through. Returning a cheerful "all sensors reporting" here instead would
+ * mean the panel talked over every turn the brain ever took.
+ */
+function noticeFor(
+  state: TelemetryState,
+  stale: boolean,
+): { text: string; tone: LinkTone | "alarm" } | null {
   if (state.pendingApproval !== null) {
-    return { text: `${state.pendingApproval.capability} is waiting for your decision.`, tone: "alarm" };
+    return {
+      text: `${state.pendingApproval.capability} is waiting for your decision.`,
+      tone: "alarm",
+    };
   }
 
   if (state.lastError !== null) return { text: state.lastError, tone: "alarm" };
@@ -98,17 +202,25 @@ function captionFor(state: TelemetryState, stale: boolean): { text: string; tone
     return { text: state.reason ?? "Waiting for the system layer.", tone: "waiting" };
   }
 
-  if (stale) return { text: "The last sample is late. Nothing here is being estimated.", tone: "stale" };
+  if (stale) {
+    return { text: "The last sample is late. Nothing here is being estimated.", tone: "stale" };
+  }
   if (state.trustEnabled) {
-    return { text: "Approval is switched off. The guard still runs; nothing stops to ask.", tone: "alarm" };
+    return {
+      text: "Approval is switched off. The guard still runs; nothing stops to ask.",
+      tone: "alarm",
+    };
   }
 
-  return { text: "All sensors reporting. Gaps below are declared, not guessed.", tone: "live" };
+  return null;
 }
 
 export function App() {
   const { state, now, decide, setTrust, selectProvider, setKey, reindexMemory } = useTelemetry();
-  const [panel, setPanel] = useState("processor");
+  const [panel, setPanel] = useState("tools");
+  // Closed until asked for. The core is the page; a dock that opened itself would take half the
+  // stage before the user had decided they wanted it.
+  const [dockOpen, setDockOpen] = useState(false);
 
   const stale = isStale(state, now);
   const sample = state.sample;
@@ -119,7 +231,14 @@ export function App() {
   const gpu = sample?.gpu ?? null;
 
   const tone = linkTone(state, stale);
-  const caption = captionFor(state, stale);
+  const notice = noticeFor(state, stale);
+
+  const openPanel = (id: string) => {
+    // Clicking the panel already showing closes the dock, which is what makes the rail read as a
+    // set of toggles rather than a set of one-way doors.
+    setDockOpen(id !== panel || !dockOpen);
+    setPanel(id);
+  };
 
   const readings: readonly Reading[] = [
     {
@@ -140,48 +259,105 @@ export function App() {
       unit: "GiB",
       reason: reasonFor(sensors, "memory.used_bytes"),
     },
+    // Counted from frames the brain sent, not sampled: a tool call is a thing that was reported,
+    // so this is a tally rather than a measurement and it has no unavailable state.
+    { label: "TOOLS", value: String(state.toolCalls), reason: NO_DECLARATION },
+    { label: "TURNS", value: String(state.turnCount), reason: NO_DECLARATION, roomy: true },
     {
       label: "VRAM",
       value: formatGibibytes(gpu?.vram_used_bytes ?? null),
       unit: "GiB",
       reason: reasonFor(sensors, "gpu.vram_used_bytes"),
+      roomy: true,
     },
     {
       label: "CLK",
       value: formatMegahertz(cpu?.frequency_mhz ?? null),
       unit: "MHz",
       reason: reasonFor(sensors, "cpu.frequency_mhz"),
+      roomy: true,
     },
     {
       label: "UP",
       value: formatUptime(sample?.uptime_seconds ?? null),
       reason: NO_DECLARATION,
+      roomy: true,
     },
   ];
 
+  const shell = ["hud", stale ? "hud--stale" : "", dockOpen ? "hud--dock-open" : ""]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <main className={stale ? "hud hud--stale" : "hud"}>
+    <main className={shell} data-turn={state.turn}>
+      <div className="hud__grid" aria-hidden="true" />
+      <div className="hud__vignette" aria-hidden="true" />
+
+      <div className="hud__stage">
+        <Orb
+          energy={orbEnergy(sample)}
+          turn={state.turn}
+          mood={orbMood(state, tone)}
+          dockOpen={dockOpen}
+          hasCaption={notice !== null || state.caption !== null}
+          label={`System load ${formatPercent(cpu?.total_percent ?? null) ?? "unavailable"}`}
+        />
+      </div>
+
       <TopBar
+        turn={state.turn}
         tone={tone}
         trustEnabled={state.trustEnabled}
-        providerMode={state.providerMode}
         clock={new Date(now).toLocaleTimeString()}
       />
 
       <ReadingStrip readings={readings} />
 
-      <Rail items={PANELS} active={panel} onSelect={setPanel} />
+      <Rail
+        items={PANELS}
+        active={panel}
+        dockOpen={dockOpen}
+        onSelect={openPanel}
+        onClose={() => setDockOpen(false)}
+      />
 
-      <div className="hud__stage">
-        <Orb
-          energy={orbEnergy(sample)}
-          mood={orbMood(state, tone)}
-          label={`System load ${formatPercent(cpu?.total_percent ?? null) ?? "unavailable"}`}
-        />
-        <Caption text={caption.text} tone={caption.tone} />
+      <Caption turn={state.turn} caption={state.caption} detail={state.turnDetail} notice={notice} />
+
+      {/*
+        A read-out, not a control panel. The turn is reported by the brain and there is nothing in
+        this contract a tab may send to change it, so these are lit rather than clickable. Buttons
+        that looked like they drove the core while doing nothing would be worse than no buttons -
+        and buttons that actually drove it would be the UI deciding what the brain was doing.
+      */}
+      <div className="controls">
+        <div className="controls__group" role="group" aria-label="Reported turn">
+          {TURN_TRACK.map((entry) => (
+            <span
+              key={entry.id}
+              className={
+                state.turn === entry.id && tone === "live"
+                  ? "controls__chip controls__chip--on"
+                  : "controls__chip"
+              }
+              aria-current={state.turn === entry.id ? "true" : undefined}
+            >
+              {entry.label}
+            </span>
+          ))}
+          <span className="controls__divider" aria-hidden="true" />
+          <span className="controls__reading">{state.providerMode.toUpperCase()}</span>
+          <span className="controls__reading">{state.providerModel || "NO MODEL"}</span>
+        </div>
       </div>
 
-      <Dock title={PANELS.find((item) => item.id === panel)?.title ?? ""}>
+      <Dock
+        title={PANELS.find((item) => item.id === panel)?.title ?? ""}
+        open={dockOpen}
+        onClose={() => setDockOpen(false)}
+      >
+        {panel === "tools" && <ToolLogList lines={state.toolLog} />}
+
         {panel === "processor" && (
           <>
             <Metric
@@ -218,7 +394,10 @@ export function App() {
               emphasis
               unavailableReason={reasonFor(sensors, "gpu.utilization_percent")}
             />
-            <Gauge value={gpu ? fraction(gpu.utilization_percent, 100) : null} label="GPU utilization" />
+            <Gauge
+              value={gpu ? fraction(gpu.utilization_percent, 100) : null}
+              label="GPU utilization"
+            />
 
             <Metric
               label="Video memory"
@@ -253,7 +432,9 @@ export function App() {
               value={formatGibibytes(memory?.used_bytes ?? null)}
               unit="GiB"
               detail={
-                memory?.total_bytes != null ? `of ${formatGibibytes(memory.total_bytes)} GiB installed` : null
+                memory?.total_bytes != null
+                  ? `of ${formatGibibytes(memory.total_bytes)} GiB installed`
+                  : null
               }
               emphasis
               unavailableReason={reasonFor(sensors, "memory.used_bytes")}

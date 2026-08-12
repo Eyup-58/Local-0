@@ -80,6 +80,8 @@ def test_rejected_example_is_refused_for_its_stated_reason(path: Path) -> None:
         "ws.credential-set-empty.json": "key",
         "ws.provider-status-carrying-the-key.json": "key",
         "ws.memory-reindex-with-a-path.json": "vault",
+        "ws.turn-state-empty-caption.json": "caption",
+        "ws.tool-log-unknown-status.json": "status",
     }
     offending_field = expectations.get(path.name)
     if offending_field is None:

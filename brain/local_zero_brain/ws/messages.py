@@ -19,7 +19,12 @@ from uuid import uuid4
 
 from local_zero_brain import __version__
 from local_zero_brain.contracts.common import CONTRACT_VERSION, MAX_ERROR_MESSAGE_LENGTH
-from local_zero_brain.contracts.ws import WS_MESSAGE_ADAPTER, WsErrorCode
+from local_zero_brain.contracts.ws import (
+    WS_MESSAGE_ADAPTER,
+    ToolLogStatus,
+    TurnStateName,
+    WsErrorCode,
+)
 
 #: RFC 3339, UTC, seconds and coarser. Milliseconds are appended separately because strftime has
 #: no millisecond directive and %f would give six digits, which the contract's pattern rejects.
@@ -28,6 +33,9 @@ _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S."
 #: What the brain declares before the sidecar has said otherwise. The UI needs a poll interval to
 #: reason about staleness from its very first frame, and the schema has no "unknown" to express.
 DEFAULT_POLL_INTERVAL_MS = 1000
+
+MAX_CAPTION_LENGTH = 2000
+MAX_DETAIL_LENGTH = 120
 
 
 def utc_now() -> str:
@@ -159,6 +167,48 @@ class WsMessageFactory:
             },
         )
 
+    def turn_state(
+        self,
+        *,
+        state: TurnStateName,
+        since: str,
+        caption: str | None = None,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        """What the brain is doing right now, for the core and the caption line.
+
+        ``caption`` is None when there is nothing to say, and None travels as None. Empty prose is
+        deliberately not the same thing: the contract rejects "" so that a turn which produced no
+        speech cannot arrive looking like a caption that failed to render.
+        """
+        return self._envelope(
+            "turn.state",
+            {
+                "state": state,
+                "since": since,
+                "caption": _truncate(_or_none(caption), MAX_CAPTION_LENGTH),
+                "detail": _truncate(_or_none(detail), MAX_DETAIL_LENGTH),
+            },
+        )
+
+    def tool_log(
+        self, *, at: str, capability: str, message: str, status: ToolLogStatus
+    ) -> dict[str, Any]:
+        """One line of the tool log, emitted as it happens.
+
+        ``message`` may paraphrase content the brain fetched. It leaves here as text and the UI
+        renders it as text; it is never routed back into the planner. docs/SECURITY.md section 2.
+        """
+        return self._envelope(
+            "tool.log",
+            {
+                "at": at,
+                "capability": capability[:MAX_DETAIL_LENGTH],
+                "message": _truncate(message, MAX_ERROR_MESSAGE_LENGTH) or "(no detail was recorded)",
+                "status": status,
+            },
+        )
+
     def error(self, *, code: WsErrorCode, message: str, in_reply_to: str | None = None) -> dict[str, Any]:
         return self._envelope(
             "error",
@@ -183,7 +233,7 @@ class WsMessageFactory:
         return message
 
 
-def _truncate(message: str | None) -> str | None:
+def _truncate(message: str | None, limit: int = MAX_ERROR_MESSAGE_LENGTH) -> str | None:
     """Keeps prose inside the length the schema allows.
 
     An over-long message would fail validation wholesale, and a rejected error frame tells the UI
@@ -192,4 +242,17 @@ def _truncate(message: str | None) -> str | None:
     if message is None:
         return None
 
-    return message[:MAX_ERROR_MESSAGE_LENGTH]
+    return message[:limit]
+
+
+def _or_none(prose: str | None) -> str | None:
+    """Blank prose is silence, and silence is spelled None.
+
+    This is about model output, not about hiding a caller's mistake. A provider that returns "" or a
+    lone newline has said nothing, and the contract has exactly one spelling for that. Passing the
+    empty string through would fail validation and take down a turn over a model being quiet.
+    """
+    if prose is None or not prose.strip():
+        return None
+
+    return prose
