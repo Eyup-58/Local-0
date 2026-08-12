@@ -15,6 +15,8 @@ nobody notices.
 from __future__ import annotations
 
 import socket
+import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -517,6 +519,102 @@ class TestACorruptIndex:
 
         assert index.status().notes == 2
         assert not [line for line in logged if "unreadable" in line]
+
+    def test_a_rescan_after_mid_flight_corruption_still_indexes_the_vault(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """Discarding is half an answer. The call that provoked it has to be retried.
+
+        Without the retry, the rescan a user asks for returns 0 indexed and the panel shows an empty
+        memory over a full vault - and nothing runs a scan again until they press it a second time.
+        """
+        path = tmp_path / "memory.sqlite"
+        index = MemoryIndex(path)
+        index.reindex(vault)
+        self.corrupt(path)
+
+        assert index.reindex(vault).indexed == 2
+        assert index.status().notes == 2
+
+
+class TestAnIndexThatIsNotCorrupt:
+    """Everything else sqlite raises. None of it is answered by deleting the user's file.
+
+    ``sqlite3`` raises ``DatabaseError`` itself only for a damaged file, and a subclass for a lock,
+    a bad query or a bad path. Catching the base class swept all of them into the corruption
+    recovery, which deleted and rebuilt the index over failures that deleting cannot fix.
+    """
+
+    def test_a_reader_is_not_blocked_by_a_writer_and_sees_the_last_commit(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """The one that bit: ``reindex`` runs on a worker thread while the handshake calls ``status``.
+
+        ``_memory_frame`` is a plain function called on the event loop, so whatever ``status()``
+        waits for, the whole brain waits for - telemetry broadcast included. Measured before this
+        was fixed: a 300-note vault reindexing for 1.46 s blocked a concurrent ``status()`` for
+        1.57 s, the entire scan, because a writer whose page cache spills upgrades to EXCLUSIVE and
+        holds it to commit. A vault big enough to scan past the five-second busy timeout turned that
+        into a reported *zero notes* as well.
+
+        WAL is the answer sqlite already has for this: a reader takes the last committed snapshot
+        and never waits for a writer. The pre-scan count is the correct answer here, not a stale
+        one - the scan has not committed yet.
+        """
+        logged: list[str] = []
+        path = tmp_path / "memory.sqlite"
+        index = MemoryIndex(path, log=logged.append)
+        index.reindex(vault)
+
+        writer = sqlite3.connect(path)
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("UPDATE notes SET mtime = mtime")
+        try:
+            started = time.monotonic()
+            status = index.status()
+            waited = time.monotonic() - started
+        finally:
+            writer.rollback()
+            writer.close()
+
+        assert status.notes == 2, "the reader must see the last commit, not an empty index"
+        assert waited < 1.0, f"the reader waited {waited:.1f}s on a writer; WAL means it should not"
+        assert path.exists()
+        assert not [line for line in logged if "memory is off" in line]
+
+    def test_a_failing_query_does_not_delete_the_index(self, tmp_path: Path, vault: Path) -> None:
+        """A bug in a query must fail as a bug, not as an empty vault.
+
+        Swept into the corruption recovery it deleted and rebuilt the file on every call, so a
+        mistyped column read as "the user has no notes" and never gave up to say otherwise.
+        """
+        path = tmp_path / "memory.sqlite"
+        index = MemoryIndex(path)
+        index.reindex(vault)
+
+        assert index._run(lambda c: c.execute("SELECT nope FROM notes").fetchall(), []) == []
+        assert path.exists()
+        assert index.status().notes == 2
+
+    def test_a_location_that_cannot_be_created_turns_memory_off_rather_than_raising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``status()`` is on the handshake path, so an OSError here cost the whole connection.
+
+        A read-only volume or an offline profile directory raises from ``mkdir``, which is not a
+        ``sqlite3`` error and so escaped the degradation this class exists to provide.
+        """
+        logged: list[str] = []
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError("the directory cannot be created")
+
+        monkeypatch.setattr(Path, "mkdir", refuse)
+        index = MemoryIndex(tmp_path / "gone" / "memory.sqlite", log=logged.append)
+
+        assert index.status().notes == 0
+        assert index.search_trusted("panels") == []
+        assert [line for line in logged if "memory is off" in line]
 
 
 class TestEmbeddingsNeverLeaveTheMachine:

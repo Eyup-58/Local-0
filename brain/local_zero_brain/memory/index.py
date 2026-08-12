@@ -118,6 +118,18 @@ DROP TABLE IF EXISTS chunks;
 DROP TABLE IF EXISTS notes;
 """
 
+#: A reader takes the last committed snapshot instead of waiting for the writer to finish.
+#:
+#: Not a tuning knob - it is what keeps ``status()`` off the critical path of a scan. ``reindex``
+#: runs on a worker thread while ``_memory_frame`` calls ``status()`` on the event loop, so anything
+#: the reader waits for, the whole brain waits for. Measured on the default rollback journal with a
+#: 300-note vault: the scan took 1.46 s and a concurrent ``status()`` blocked for 1.57 s, because a
+#: writer whose page cache spills upgrades to EXCLUSIVE and holds it until commit. A vault large
+#: enough to scan past the five-second busy timeout reported zero notes on top of the stall.
+#:
+#: The cost is two sidecar files beside the index, which ``_discard`` removes with it.
+_JOURNAL_MODE = "WAL"
+
 _T = TypeVar("_T")
 
 
@@ -518,7 +530,9 @@ class MemoryIndex:
         self._embeddings_available = True
         return [array("f", vector).tobytes() for vector in vectors]
 
-    def _run(self, work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
+    def _run(
+        self, work: Callable[[sqlite3.Connection], _T], default: _T, *, retry: bool = True
+    ) -> _T:
         """Runs ``work`` against the index, degrading to ``default`` instead of raising.
 
         Every read and write in this class goes through here, which is the point: the caller that
@@ -528,8 +542,9 @@ class MemoryIndex:
         The two failure shapes are answered differently. A file whose header will not open is
         handled by ``_open``, which discards it and rebuilds - the user loses nothing, because the
         vault is the source of truth. Corruption that only surfaces deeper in, once pages are being
-        read, cannot be answered mid-transaction: the file is discarded here so the *next* call
-        rebuilds it, and this call returns the empty answer rather than a wrong one.
+        read, cannot be answered mid-transaction: the file is discarded here, and ``retry`` then
+        runs the same work once more against the rebuilt file rather than reporting an empty answer
+        the caller has no way to tell apart from an empty vault.
         """
         connection = self._open()
         if connection is None:
@@ -540,12 +555,20 @@ class MemoryIndex:
                 return work(connection)
         except sqlite3.DatabaseError as error:
             connection.close()
+
+            if not _is_corruption(error):
+                self._log(f"the memory index could not be read ({error}); memory answers empty here")
+                return default
+
             # Closed before discarding, not merely in the `finally` below. Windows refuses to unlink
             # a file that is still open, so discarding from under a live connection turns every
             # mid-flight corruption into a permanent memory-off - the recovery would be unreachable
             # on the one platform this product runs on. `close` is idempotent, so the `finally`
             # calling it again costs nothing.
             self._discard(f"the memory index became unreadable while in use ({error})")
+            if retry and not self._unusable:
+                return self._run(work, default, retry=False)
+
             return default
         finally:
             connection.close()
@@ -562,7 +585,16 @@ class MemoryIndex:
 
         try:
             return self._prepare()
+        except OSError as error:
+            # Not a corrupt cache: the location itself is unusable - a profile directory that cannot
+            # be created, a volume mounted read-only. Deleting and rescanning answers neither.
+            self._give_up(f"the memory index at {self._path} could not be opened ({error})")
+            return None
         except sqlite3.DatabaseError as error:
+            if not _is_corruption(error):
+                self._log(f"the memory index could not be opened ({error}); memory answers empty here")
+                return None
+
             self._discard(f"the memory index at {self._path} is unreadable ({error})")
 
         if self._unusable:
@@ -570,7 +602,7 @@ class MemoryIndex:
 
         try:
             return self._prepare()
-        except sqlite3.DatabaseError as error:
+        except (sqlite3.DatabaseError, OSError) as error:
             # A fresh file that still will not open is not a corrupt cache; something is wrong with
             # the location itself. Memory goes off and the rest of the product carries on.
             self._give_up(f"the memory index could not be rebuilt ({error})")
@@ -582,6 +614,10 @@ class MemoryIndex:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(self._path)
             try:
+                # Set outside the transaction below: sqlite refuses a journal mode change inside
+                # one. It is written into the file header, so this holds for every later connection.
+                connection.execute(f"PRAGMA journal_mode = {_JOURNAL_MODE}")
+
                 with connection:
                     version = connection.execute("PRAGMA user_version").fetchone()[0]
                     if version and version != SCHEMA_VERSION:
@@ -609,6 +645,11 @@ class MemoryIndex:
 
         try:
             self._path.unlink(missing_ok=True)
+            # WAL leaves a -wal and a -shm beside the database. Left behind, they belong to a file
+            # that no longer exists, and sqlite would be entitled to read the rebuilt index through
+            # a log written against the corrupt one.
+            for sidecar in (f"{self._path.name}-wal", f"{self._path.name}-shm"):
+                self._path.with_name(sidecar).unlink(missing_ok=True)
         except OSError as error:
             # Held open by a backup agent, or on a volume that has gone read-only. Rebuilding is not
             # available either, so there is nothing left to do but keep everything else running.
@@ -623,6 +664,24 @@ class MemoryIndex:
             self._log(f"{reason}; memory is off for this session and the vault is untouched")
 
         self._unusable = True
+
+
+def _is_corruption(error: sqlite3.DatabaseError) -> bool:
+    """Damage to the file, as opposed to a lock, a bug in a query, or an unusable location.
+
+    Only the first is answered by deleting the file, and telling them apart is not a guess: sqlite3
+    raises ``DatabaseError`` itself for ``SQLITE_NOTADB`` and ``SQLITE_CORRUPT``, and a *subclass*
+    for everything else - ``OperationalError`` for "database is locked" and "no such column",
+    ``ProgrammingError`` for misuse.
+
+    Getting this wrong was not theoretical. ``reindex`` runs on a worker thread while the handshake
+    calls ``status()`` on the event loop, so the two contend for a five-second busy timeout; treating
+    that lock as corruption deleted the index - and on Windows the delete failed, because the thread
+    still held the file, which latched memory off for the whole session. A mistyped column did the
+    same thing more quietly: the file was deleted and rebuilt on every call, so a query bug read as
+    an empty vault instead of failing a test.
+    """
+    return type(error) is sqlite3.DatabaseError
 
 
 def _match_expression(query: str) -> str | None:

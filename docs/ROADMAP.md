@@ -300,13 +300,13 @@ Exit criteria, with the evidence for each. Verified 2026-08-13.
       reached was `127.0.0.1`, and `GeminiProvider.embed` raises rather than exporting the vault
 - [x] Incremental reindex touches only changed files, **measured** rather than asserted —
       `bench/reindex_incremental.py`, 2026-08-13: a 40-note vault, one note edited, warm pass
-      1 indexed / 39 skipped, 1.352 s → 0.039 s with embeddings on. Wall time rather than the
+      1 indexed / 39 skipped, 1.985 s → 0.052 s with embeddings on. Wall time rather than the
       counter, because a counter reading one proves the counter, not that the second scan is cheaper
 - [x] Missing vault, corrupt frontmatter, absent Ollama and a corrupt index each degrade rather than
       crash: telemetry and approval keep working with memory switched off — `TestWithoutAVault`,
       `TestFrontmatter`, `test_a_provider_with_no_embedding_model_degrades_to_keyword_search`, and
-      `TestACorruptIndex` (9 cases) with the handshake case in `test_ws_server.py`. Fixed in
-      `bfb3791`
+      `TestACorruptIndex` (10 cases) and `TestAnIndexThatIsNotCorrupt` (3), with the handshake case
+      in `test_ws_server.py`. Fixed in `bfb3791`, and narrowed after review — see below
 - [x] `/threat-check` reports clean — run 2026-08-13 over the memory surface, all ten items covered,
       no findings. Path canonicalisation is exercised against a real junction and a real symlink in
       `test_paths.py` rather than argued for
@@ -327,6 +327,29 @@ Discarding the file from under a live connection cannot work — Windows will no
 file — so corruption surfacing mid-query turned into a permanent memory-off on the only platform
 this product runs on. Closing before discarding is one line, and nothing but a test that provoked
 the case would have shown it was missing.
+
+**The recovery was then too eager, which review caught and the tests had not.** `sqlite3` raises
+`DatabaseError` itself only for a damaged file and a *subclass* for everything else, so catching the
+base class swept in `database is locked` — which this product generates on its own, since `reindex`
+runs on a worker thread while the handshake calls `status()` on the event loop. Reproduced on this
+machine: a five-second busy timeout was read as corruption, the unlink then failed with `WinError 32`
+because the writer still held the file, and memory was off for the rest of the session over a lock
+that cleared a moment later. A mistyped column did the same thing more quietly — deleted and rebuilt
+on every call, so a query bug read as an empty vault. Both now answer empty for the one call and
+leave the file alone; only `SQLITE_NOTADB` and `SQLITE_CORRUPT` reach the discard. Two further gaps
+closed with it: a discard now retries the work that provoked it, so a user's rescan indexes the vault
+instead of reporting zero, and an `OSError` from an uncreatable directory degrades instead of raising
+through `status()` into the handshake.
+
+**Narrowing the catch stopped the data loss and left the stall, which only measurement showed.** A
+lock no longer deletes anything, but the reader still waited for it, and `_memory_frame` calls
+`status()` on the event loop — so what the reader waits for, every connected tab waits for. Measured
+with a 300-note vault: the scan took 1.46 s and one concurrent `status()` blocked 1.57 s, the whole
+scan, because a writer whose page cache spills upgrades to EXCLUSIVE and holds it to commit. Past a
+five-second scan it would have reported zero notes as well. The index now opens in **WAL**, where a
+reader takes the last committed snapshot and never waits: worst case over the same scan fell to
+0.05 s, and the scan itself to 0.61 s. `_discard` removes the `-wal` and `-shm` sidecars with the
+file, so a rebuilt index cannot be read through a log written against the corrupt one.
 
 The second failure was smaller and worse. `Projects`, `Knowledge` and `System` were protected in
 `create_app` and had been all along; what was missing was any test that said so. `Memory` was
