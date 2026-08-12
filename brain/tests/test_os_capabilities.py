@@ -154,3 +154,92 @@ class TestTheExplorerBinaryIsNotResolvedThroughPath:
         from local_zero_brain.capabilities.handlers import _EXPLORER
 
         assert Path(_EXPLORER).exists()
+
+
+class TestLaunchApplication:
+    """The most permeable capability in the registry, and the one whose roots were a decision.
+
+    Games do not live under Program Files, so containment covers the program directories *and* the
+    Steam libraries discovered at startup. All of them are outside the workspace, so the escalation
+    rule raises every launch to `destructive` and it stops for a human showing the resolved path.
+    """
+
+    @staticmethod
+    def launcher(tmp_path: Path, program_dir: Path) -> Guard:
+        """A guard whose launch roots are one directory under the test's control."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(exist_ok=True)
+
+        return Guard(
+            registry=build_registry(workspace, launch_roots=(program_dir,)),
+            workspace=workspace,
+            audit=AuditLog(tmp_path / "audit.jsonl"),
+        )
+
+    def test_an_executable_in_a_launch_root_stops_at_approval(self, tmp_path: Path) -> None:
+        programs = tmp_path / "Programs"
+        programs.mkdir()
+        (programs / "game.exe").write_bytes(b"MZ")
+
+        verdict = self.launcher(tmp_path, programs).evaluate(
+            Invocation("launch_application", {"path": str(programs / "game.exe")})
+        )
+
+        assert isinstance(verdict, Pending)
+        # Outside the workspace, so the escalation rule applies: breadth costs an approval.
+        assert verdict.side_effect == "destructive"
+
+    def test_something_outside_the_launch_roots_is_refused(self, tmp_path: Path) -> None:
+        programs = tmp_path / "Programs"
+        programs.mkdir()
+        stray = tmp_path / "elsewhere.exe"
+        stray.write_bytes(b"MZ")
+
+        verdict = self.launcher(tmp_path, programs).evaluate(
+            Invocation("launch_application", {"path": str(stray)})
+        )
+
+        assert isinstance(verdict, Denied)
+
+    @pytest.mark.parametrize("suffix", [".bat", ".cmd", ".ps1", ".vbs", ".lnk", ".msi", ""])
+    def test_only_an_exe_may_be_launched(self, tmp_path: Path, suffix: str) -> None:
+        """`.bat` and `.cmd` are the reason this check exists rather than being fussiness.
+
+        CreateProcess cannot run a batch file directly; Windows hands it to the command
+        interpreter. So launching one *is* a shell invocation, arriving by the back door that red
+        line 3 closes at the front - and the argument would be a path a model chose.
+        """
+        programs = tmp_path / "Programs"
+        programs.mkdir()
+        target = programs / f"thing{suffix}"
+        target.write_bytes(b"MZ")
+
+        verdict = self.launcher(tmp_path, programs).evaluate(
+            Invocation("launch_application", {"path": str(target)})
+        )
+
+        assert isinstance(verdict, Denied)
+
+    def test_the_steam_libraries_are_among_the_real_roots(self, tmp_path: Path) -> None:
+        """The wiring, rather than a hand-built guard: build_registry asks steam where to look."""
+        from local_zero_brain.capabilities import steam
+
+        libraries = steam.library_paths()
+        if not libraries:
+            pytest.skip("Steam is not installed on this machine")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(exist_ok=True)
+        registry = build_registry(workspace)
+
+        roots = registry.get("launch_application").allowed_roots
+        assert all(library in roots for library in libraries)
+
+    def test_the_program_directories_are_among_the_real_roots(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(exist_ok=True)
+        registry = build_registry(workspace)
+
+        roots = {str(root).lower() for root in registry.get("launch_application").allowed_roots}
+        program_files = os.environ.get("ProgramFiles")
+        assert program_files and program_files.lower() in roots

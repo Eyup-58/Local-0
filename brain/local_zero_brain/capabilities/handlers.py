@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated
 
 import psutil
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from local_zero_brain.capabilities.registry import (
     Capability,
@@ -29,8 +29,12 @@ from local_zero_brain.capabilities.registry import (
     PathArgument,
 )
 from local_zero_brain.capabilities.results import ResultTable
+from local_zero_brain.capabilities import steam
 
 _BYTES_PER_MB = 1024 * 1024
+
+#: The only thing launch_application will start. See LaunchApplicationArgs for why.
+_EXECUTABLE_SUFFIX = ".exe"
 
 #: Absolute, under the Windows directory, rather than the bare name.
 #:
@@ -96,6 +100,85 @@ class ListProcessesArgs(CapabilityArgs):
 
 class OpenFolderArgs(CapabilityArgs):
     path: PathArgument
+
+
+class LaunchApplicationArgs(CapabilityArgs):
+    path: PathArgument
+
+    @field_validator("path")
+    @classmethod
+    def must_be_an_executable(cls, value: str) -> str:
+        """Only ``.exe``, and this is not fussiness about file types.
+
+        CreateProcess cannot run a ``.bat`` or ``.cmd`` directly - Windows hands it to the command
+        interpreter. So launching one **is** a shell invocation, arriving by the back door that red
+        line 3 closes at the front, with an argument a model chose. ``.lnk`` is worse: a shortcut
+        names its own target and arguments, so containing the path the guard checked would say
+        nothing about what actually ran.
+
+        Checked on the argument rather than in the handler: step 2 is where an invalid argument is
+        supposed to die, and a handler that re-checked would be the second place to keep in step.
+        """
+        if not value.lower().endswith(_EXECUTABLE_SUFFIX):
+            raise ValueError(
+                f"only {_EXECUTABLE_SUFFIX} may be launched. A batch file is run by the command "
+                "interpreter and a shortcut names its own target, so neither is contained by the "
+                "path checked here"
+            )
+
+        return value
+
+
+def launch_application(path: str) -> None:
+    """Starts a program.
+
+    One argument: the executable, and nothing after it. Arguments a model composed would be a
+    command line in everything but name, and there is no request yet that needs them - when there
+    is, it is a deliberate change with its own validation rather than a parameter that was always
+    quietly there.
+
+    ``shell=False`` with a list, so nothing between here and CreateProcess parses the string.
+    """
+    subprocess.Popen([path], shell=False)  # noqa: S603 - argv list, no shell, .exe enforced above
+
+
+def _launch_roots() -> tuple[Path, ...]:
+    """Where a program may be launched from: the program directories, and Steam's libraries.
+
+    Games are the reason for the second half - they live wherever Steam was pointed, which on this
+    machine is ``d:\\steam``, and a launcher restricted to Program Files would refuse every one of
+    them. The libraries are discovered at startup from Steam's own files rather than guessed.
+
+    Every root here is outside the workspace, so the escalation rule raises a launch to
+    ``destructive`` and it stops for a human showing the resolved path. Breadth costs an approval.
+    """
+    directories = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramW6432"),
+    ]
+
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        directories.append(str(Path(local_app_data) / "Programs"))
+
+    for directory in [*directories, *(str(library) for library in steam.library_paths())]:
+        if not directory:
+            continue
+
+        resolved = Path(directory).resolve()
+        # A root that does not exist is dropped rather than declared: containment against a path
+        # nothing can reach is a rule that reads as protection and enforces nothing.
+        if resolved in seen or not resolved.is_dir():
+            continue
+
+        seen.add(resolved)
+        roots.append(resolved)
+
+    return tuple(roots)
 
 
 def list_processes() -> ResultTable:
@@ -207,7 +290,11 @@ def _without_frontmatter(content: str) -> str:
 
 
 def build_registry(
-    workspace: Path, wide_root: Path | None = None, *, vault: Path | None = None
+    workspace: Path,
+    wide_root: Path | None = None,
+    *,
+    vault: Path | None = None,
+    launch_roots: tuple[Path, ...] | None = None,
 ) -> CapabilityRegistry:
     """The registry.
 
@@ -282,6 +369,15 @@ def build_registry(
                 side_effect="write",
                 allowed_roots=(workspace,),
                 handler=open_folder,
+            ),
+            Capability(
+                name="launch_application",
+                args_schema=LaunchApplicationArgs,
+                side_effect="destructive",
+                # Discovered rather than hardcoded, and overridable so a test can bound it to a
+                # directory it controls instead of whatever this machine has installed.
+                allowed_roots=launch_roots if launch_roots is not None else _launch_roots(),
+                handler=launch_application,
             ),
             Capability(
                 name="write_text_file",
