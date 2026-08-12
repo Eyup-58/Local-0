@@ -818,6 +818,47 @@ body {
 }
 
 /*
+ * The one confirmation in this product that exists to slow somebody down.
+ *
+ * Bordered in the alarm colour and set at readable size rather than in the quiet register the rest
+ * of this panel uses: it is asking about the user's own notes leaving the machine, and a warning
+ * styled like a caption is a warning nobody reads.
+ */
+.provider__confirm {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--alarm);
+  border-radius: var(--radius);
+  background: rgba(224, 112, 90, 0.06);
+}
+
+.provider__confirm-lead {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.provider__confirm-list {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 70ch;
+}
+
+.provider__confirm-note {
+  margin: 0 0 12px;
+  color: var(--ink-dim);
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-width: 70ch;
+}
+
+.button--alarm {
+  border-color: var(--alarm);
+  color: var(--alarm);
+}
+
+/*
  * The memory panel. Quiet like the provider panel: this reports state rather than warning about
  * one. The vault path is shown in full and allowed to wrap - a truncated path is exactly the kind
  * of "helpful" display that hides which of two similar vaults is loaded.

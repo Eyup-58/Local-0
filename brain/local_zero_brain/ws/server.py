@@ -21,6 +21,7 @@ from local_zero_brain.audit import AuditLog
 from local_zero_brain.capabilities.guard import Denied, Guard, Invocation, Pending, Verdict
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.capabilities.paths import workspace_root
+from local_zero_brain.capabilities.registry import CapabilityRegistry
 from local_zero_brain.contracts.common import CONTRACT_VERSION
 from local_zero_brain.contracts.ws import (
     CLIENT_HELLO_ADAPTER,
@@ -36,7 +37,8 @@ from local_zero_brain.credentials import CredentialStore, Secret
 from local_zero_brain.ipc.pipe_client import DEFAULT_PIPE_NAME, PipeEvent, SystemPipeClient
 from local_zero_brain.link import SystemLink
 from local_zero_brain.metrics import DropCounters
-from local_zero_brain.planner import Planner
+from local_zero_brain.planner import Planner, Proposal
+from local_zero_brain.llm.provider import MissingKey, Provider, build_provider
 from local_zero_brain.llm.ollama import DEFAULT_MODEL as LOCAL_MODEL, OllamaProvider
 from local_zero_brain.llm.gemini import DEFAULT_MODEL as CLOUD_MODEL
 from local_zero_brain.memory.index import MemoryIndex
@@ -75,9 +77,9 @@ class BrainServices:
     credentials: CredentialStore
     #: Long-term memory over the Obsidian vault. Disabled, not broken, when there is no vault.
     memory: MemoryManager
-    #: Proposes operations from what the user typed. The only component that sees a turn.request, and
-    #: the only one that talks to a model about what to do - it proposes, the guard disposes.
-    planner: Planner
+    #: What the model is told exists. Shared with the guard so the two cannot drift apart; it is
+    #: still not the whitelist - the guard's step 1 is, and it runs again on whatever comes back.
+    registry: CapabilityRegistry
     log: Any = print
     #: Guard verdicts waiting on a human, by request_id.
     #:
@@ -87,6 +89,39 @@ class BrainServices:
     awaiting: dict[str, Pending] = field(default_factory=dict)
     client: SystemPipeClient | None = None
     reader: asyncio.Task[None] | None = None
+
+    def provider(self) -> Provider:
+        """The model layer for right now, read from the persisted mode every time it is asked for.
+
+        **Deliberately not cached, and not chosen at construction.** The boundary moves at runtime:
+        a component holding the provider it was built with would keep calling the cloud after the
+        user selected Local, and the UI would report one boundary while another was in force - the
+        wrong way round to be wrong, and the same failure `trust.status` and `provider.status` are
+        carried as their own messages to avoid. Until this existed the planner held an
+        ``OllamaProvider`` from startup, so selecting Cloud opened the egress guard and changed
+        nothing else: exposure with no benefit.
+
+        ``build_provider`` raises ``MissingKey`` when Cloud is selected with nothing stored.
+        ``_apply_provider`` refuses to *enter* Cloud without a key, so reaching that means the key
+        went away underneath a selection that was valid when it was made - a state to report, not to
+        paper over by falling back to Local while the UI still says Cloud.
+        """
+        state = self.providers.load()
+
+        return build_provider(
+            mode=state.mode,
+            # Read per call for the same reason the mode is: a key entered or deleted mid-session
+            # must not need a restart to take effect.
+            key=self.credentials.read() if state.mode == "cloud" else None,
+        )
+
+    def planner(self) -> Planner:
+        """A planner bound to whichever provider is live for this turn.
+
+        Rebuilt per turn rather than held as a field, which is what makes a stale provider
+        impossible rather than merely unlikely. Construction is two attribute assignments.
+        """
+        return Planner(provider=self.provider(), registry=self.registry)
 
     async def invoke(self, invocation: Invocation) -> Verdict:
         """The single entry point for proposing an operation.
@@ -187,9 +222,7 @@ def create_app(
         providers=providers,
         credentials=CredentialStore(credential_target) if credential_target else CredentialStore(),
         memory=memory,
-        # The registry here is not the whitelist - the guard's step 1 is, and it runs again on
-        # whatever comes back regardless of what was offered to the model.
-        planner=Planner(provider=OllamaProvider(), registry=registry),
+        registry=registry,
         log=log,
     )
 
@@ -505,6 +538,22 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
     await services.hub.broadcast(services.messages.turn_state(state="idle", since=finished))
 
 
+def _propose(services: BrainServices, planner: Planner, text: str) -> Proposal:
+    """Recall, then propose. Runs on a worker thread; both halves block.
+
+    **The vault goes to whichever provider is selected, including the cloud one.** That is a decision
+    taken deliberately and it is the sharpest edge in this file: in Cloud mode the chunks recalled
+    here are the user's own notes, and they leave the machine inside the prompt. docs/SECURITY.md
+    section 11 states it, and the UI warns before the switch rather than after - a capability the
+    user did not know they had enabled is not a feature.
+
+    Only ``recall_trusted`` is called, so what travels is notes the user wrote themselves.
+    Agent-written memory is ``UntrustedChunk`` and has no conversion to the type ``assemble_context``
+    accepts, which is the same wall that keeps it out of the local planner.
+    """
+    return planner.propose(text, context=services.memory.recall_trusted(text))
+
+
 async def _plan(services: BrainServices, message: TurnRequest) -> None:
     """One conversational turn: think, then either propose something or say why not.
 
@@ -529,10 +578,22 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
     await services.hub.broadcast(services.messages.turn_state(state="thinking", since=utc_now()))
 
     try:
-        # Off the event loop: complete_json is a blocking HTTP call to the model, and holding the
-        # loop for the length of it would stall every socket the brain has - including the telemetry
-        # the user is watching while they wait.
-        proposal = await asyncio.to_thread(services.planner.propose, text)
+        planner = services.planner()
+    except MissingKey as error:
+        # Its own branch because the message is worth passing through verbatim: build_provider's
+        # wording tells the user what to do about it, and "failed with MissingKey" would not.
+        services.log("planning refused: cloud mode with no key")
+        await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
+        await services.hub.broadcast(
+            services.messages.error(code="provider_unavailable", message=str(error))
+        )
+        return
+
+    try:
+        # Off the event loop: both the recall and the completion are blocking, and holding the loop
+        # for the length of them would stall every socket the brain has - including the telemetry the
+        # user is watching while they wait.
+        proposal = await asyncio.to_thread(_propose, services, planner, text)
     except Exception as error:  # noqa: BLE001 - a provider may raise anything; none of it may escape
         services.log(f"planning failed: {type(error).__name__}")
         await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))

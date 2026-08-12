@@ -55,10 +55,14 @@ describe("selecting a mode", () => {
   });
 
   it("offers cloud once a key is stored", () => {
+    // Offered, then confirmed. The second click is not ceremony: cloud mode starts sending recalled
+    // vault notes off the machine, so the switch is a decision rather than a click. The
+    // confirmation itself is covered in "moving to cloud" below.
     const onSelect = vi.fn();
     render(<ProviderControl mode="local" model="gemma4:26b" hasKey onSelect={onSelect} onKey={noop} />);
 
     fireEvent.click(screen.getByRole("button", { name: /use cloud/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Send my notes to Google/i }));
 
     expect(onSelect).toHaveBeenCalledWith("cloud");
   });
@@ -118,5 +122,75 @@ describe("the key", () => {
     expect(screen.getByText(/a key is stored/i)).toBeInTheDocument();
     // There is nothing to leak: the component is never given the value in the first place.
     expect(container.innerHTML).not.toContain(KEY);
+  });
+});
+
+describe("moving to cloud", () => {
+  function renderWithKey(onSelect: (mode: "local" | "cloud") => void) {
+    render(
+      <ProviderControl mode="local" model="gemma4:26b" hasKey onSelect={onSelect} onKey={noop} />,
+    );
+  }
+
+  it("does not move the boundary on the first click", () => {
+    // The decisive one. Recalled vault notes travel in cloud mode (SECURITY.md §11), so the switch
+    // that starts that has to be a decision rather than a click.
+    const onSelect = vi.fn();
+    renderWithKey(onSelect);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use cloud" }));
+
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("says the vault is what leaves, not just 'data'", () => {
+    renderWithKey(noop);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use cloud" }));
+
+    expect(screen.getByText(/Notes from your vault/i)).toBeInTheDocument();
+  });
+
+  it("labels the confirm button with what it does rather than with OK", () => {
+    // "OK" is what people click without reading.
+    renderWithKey(noop);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use cloud" }));
+
+    expect(screen.getByRole("button", { name: /Send my notes to Google/i })).toBeInTheDocument();
+  });
+
+  it("moves the boundary only once the confirmation is answered", () => {
+    const onSelect = vi.fn();
+    renderWithKey(onSelect);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use cloud" }));
+    fireEvent.click(screen.getByRole("button", { name: /Send my notes to Google/i }));
+
+    expect(onSelect).toHaveBeenCalledWith("cloud");
+  });
+
+  it("leaves the boundary alone when the user backs out", () => {
+    const onSelect = vi.fn();
+    renderWithKey(onSelect);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use cloud" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stay local" }));
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Notes from your vault/i)).not.toBeInTheDocument();
+  });
+
+  it("moves back to local without asking", () => {
+    // Asymmetric on purpose: this direction narrows what leaves the machine, and nobody needs
+    // talking out of that.
+    const onSelect = vi.fn();
+    render(
+      <ProviderControl mode="cloud" model="gemini" hasKey onSelect={onSelect} onKey={noop} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use local" }));
+
+    expect(onSelect).toHaveBeenCalledWith("local");
   });
 });

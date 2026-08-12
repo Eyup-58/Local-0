@@ -625,6 +625,41 @@ of the most personal thing in the product, arriving as a side effect of a switch
 get a better answer to one question. `GeminiProvider.embed` raises rather than being merely unused,
 so the rule is enforced where it would otherwise be a convention nobody remembers.
 
+### Recalled notes DO travel in Cloud mode — decided by the user, 2026-08-12
+
+The paragraph above refuses to send the vault. This one sends part of it, and the two are only
+consistent if the difference is stated plainly rather than left for a reader to reconcile.
+
+**What happens:** every turn recalls trusted chunks from the vault and puts them in the planner's
+prompt. In Cloud mode that prompt goes to Google. So the notes relevant to a question leave the
+machine when the question is asked.
+
+| | Embeddings | Recalled chunks |
+|---|---|---|
+| How much | The **entire** vault | Only what matched one question |
+| When | Automatically, on every index | Only when the user asks something |
+| Triggered by | A background job | A request the user typed |
+| In Cloud mode | **Never leaves** — `embed` raises | **Leaves**, inside the prompt |
+
+The distinction that makes both rules coherent is bulk-and-automatic versus selective-and-asked-for.
+It is not a claim that the second is harmless. Ask enough questions and enough of the vault has been
+sent; nobody should read this section and conclude their notes are private in Cloud mode. **They are
+not.** Local mode remains the only configuration where the vault does not leave the machine, which
+is the same sentence §11 opens with and the reason Local is the default.
+
+Only `recall_trusted` is called, so what travels is notes the user wrote themselves. Agent-written
+memory is an `UntrustedChunk` with no conversion to the type `assemble_context` accepts — the same
+wall that keeps it out of the local planner, for the reason in §2 rather than a privacy reason.
+
+Two things follow, and both are requirements rather than nice-to-haves:
+
+1. **The UI warns before the switch, not after.** A capability the user did not know they had
+   enabled is not a feature. `ProviderControl` says what will leave, and the confirmation names the
+   vault explicitly.
+2. **This is a user decision, recorded as one.** It was taken knowingly on 2026-08-12 against a
+   stated alternative — Local-only recall, at the cost of an assistant with no memory in Cloud mode.
+   Anyone reversing it is reversing a choice, not fixing an oversight.
+
 ### The key
 
 Entered in the UI and stored in **Windows Credential Manager** — never in a file, never in the

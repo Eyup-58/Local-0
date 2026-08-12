@@ -24,7 +24,6 @@ from local_zero_brain.memory.index import MemoryIndex
 from local_zero_brain.memory.manager import MemoryManager
 from local_zero_brain.metrics import DropCounters
 from local_zero_brain.net.egress import EgressGuard
-from local_zero_brain.planner import Planner
 from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
 from local_zero_brain.ws.messages import WsMessageFactory
@@ -155,10 +154,6 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
         async def broadcast(self, message: dict) -> None:
             sent.append(message)
 
-    class UnusedProvider:
-        def complete(self, prompt: str, *, system: str | None = None) -> str:
-            raise AssertionError("this test must not reach the model layer")
-
     services = BrainServices(
         counters=DropCounters(),
         hub=RecordingHub(),  # type: ignore[arg-type]
@@ -170,10 +165,10 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
         providers=ProviderStore(tmp_path / "provider.json"),
         credentials=CredentialStore(target="LocalZero/test/ws-server"),
         memory=MemoryManager(root=None, index=MemoryIndex(tmp_path / "memory.sqlite")),
-        # Required but unused here: this test drives _execute directly, past the point a planner has
-        # anything to do. A provider that raises makes that explicit - if the path under test ever
-        # starts reaching the model, this fails loudly rather than quietly calling a real one.
-        planner=Planner(provider=UnusedProvider(), registry=CapabilityRegistry(())),
+        # Empty on purpose: this test drives _execute directly, past the point the planner has
+        # anything to do. Handing it the real registry would leave what the model is offered
+        # looking like part of this test's setup when it is not.
+        registry=CapabilityRegistry(()),
         log=lambda _: None,
     )
 

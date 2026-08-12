@@ -13,6 +13,11 @@
  *   not disabled here — a control that greys itself out is a client-side rule, and the boundary is
  *   not a client-side rule. The disabled attribute below is a courtesy that saves a round trip; the
  *   refusal still exists on the other end.
+ *
+ * Moving to Cloud asks first, and the confirmation names the vault. Recalled notes travel in the
+ * prompt in Cloud mode (SECURITY.md §11), which is a user decision taken knowingly — and a decision
+ * taken knowingly needs the moment where it is known. The confirm button says what it does rather
+ * than "OK", because "OK" is what people click without reading.
  */
 
 import { useState } from "react";
@@ -28,6 +33,9 @@ interface ProviderControlProps {
 
 export function ProviderControl({ mode, model, hasKey, onSelect, onKey }: ProviderControlProps) {
   const [draft, setDraft] = useState("");
+  // Cloud is confirmed, Local is not. The asymmetry is the point: one direction widens what leaves
+  // the machine and the other narrows it, and only the widening is worth stopping someone over.
+  const [confirming, setConfirming] = useState(false);
 
   const submitKey = () => {
     const value = draft.trim();
@@ -56,7 +64,10 @@ export function ProviderControl({ mode, model, hasKey, onSelect, onKey }: Provid
         <button
           type="button"
           className="button"
-          onClick={() => onSelect("local")}
+          onClick={() => {
+            setConfirming(false);
+            onSelect("local");
+          }}
           disabled={mode === "local"}
         >
           Use local
@@ -64,12 +75,44 @@ export function ProviderControl({ mode, model, hasKey, onSelect, onKey }: Provid
         <button
           type="button"
           className="button"
-          onClick={() => onSelect("cloud")}
+          onClick={() => setConfirming(true)}
           disabled={mode === "cloud" || !hasKey}
         >
           Use cloud
         </button>
       </div>
+
+      {confirming && (
+        <div className="provider__confirm" role="alertdialog" aria-label="Confirm cloud mode">
+          <p className="provider__confirm-lead">Cloud mode sends two things to Google:</p>
+          <ul className="provider__confirm-list">
+            <li>What you type.</li>
+            <li>
+              <strong>Notes from your vault.</strong> Every question recalls the notes that match it
+              and puts them in the prompt. Ask enough and enough of the vault has been sent.
+            </li>
+          </ul>
+          <p className="provider__confirm-note">
+            Your vault is never indexed through the network — embeddings stay on this machine in
+            every mode. Local mode is the only setting where your notes do not leave at all.
+          </p>
+          <div className="provider__controls">
+            <button
+              type="button"
+              className="button button--alarm"
+              onClick={() => {
+                setConfirming(false);
+                onSelect("cloud");
+              }}
+            >
+              Send my notes to Google
+            </button>
+            <button type="button" className="button" onClick={() => setConfirming(false)}>
+              Stay local
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="provider__key">
         <label className="provider__label" htmlFor="provider-key">

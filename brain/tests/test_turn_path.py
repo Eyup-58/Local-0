@@ -17,7 +17,8 @@ from local_zero_brain.audit import AuditLog
 from local_zero_brain.capabilities.guard import Guard
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.contracts.ws import CLIENT_MESSAGE_ADAPTER, WS_MESSAGE_ADAPTER, TurnRequest
-from local_zero_brain.credentials import CredentialStore
+from local_zero_brain.credentials import CredentialStore, Secret
+from local_zero_brain.llm.provider import MissingKey
 from local_zero_brain.memory.index import MemoryIndex
 from local_zero_brain.memory.manager import MemoryManager
 from local_zero_brain.metrics import DropCounters
@@ -26,6 +27,7 @@ from local_zero_brain.planner import Planner
 from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
 from local_zero_brain.ws.messages import WsMessageFactory
+from local_zero_brain.ws import server
 from local_zero_brain.ws.server import BrainServices, _plan
 
 STAMP = "2026-08-12T18:24:11.418Z"
@@ -52,7 +54,16 @@ class ScriptedProvider:
         raise NotImplementedError
 
 
-def build_services(tmp_path: Path, provider: ScriptedProvider) -> tuple[BrainServices, list[dict]]:
+def build_services(
+    tmp_path: Path, provider: ScriptedProvider, monkeypatch: pytest.MonkeyPatch
+) -> tuple[BrainServices, list[dict]]:
+    """Wires a brain whose provider is the scripted one.
+
+    Patched at ``build_provider``, which is the seam ``BrainServices.provider`` goes through, so the
+    tests exercise the real routing code rather than a field that was handed a provider.
+    """
+    monkeypatch.setattr(server, "build_provider", lambda **_: provider)
+
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     registry = build_registry(workspace)
@@ -81,7 +92,7 @@ def build_services(tmp_path: Path, provider: ScriptedProvider) -> tuple[BrainSer
         providers=ProviderStore(tmp_path / "provider.json"),
         credentials=CredentialStore(target="LocalZero/test/turn-path"),
         memory=MemoryManager(root=None, index=MemoryIndex(tmp_path / "memory.sqlite")),
-        planner=Planner(provider=provider, registry=registry),
+        registry=registry,
         log=lambda _: None,
     )
     return services, sent
@@ -103,21 +114,25 @@ def states(sent: list[dict]) -> list[str]:
     return [frame["payload"]["state"] for frame in sent if frame["type"] == "turn.state"]
 
 
-async def test_a_turn_reports_thinking_before_it_reaches_the_model(tmp_path: Path) -> None:
+async def test_a_turn_reports_thinking_before_it_reaches_the_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The panel must be able to say the brain is working while it is, not once it has finished."""
     provider = ScriptedProvider(json.dumps({"capability": None, "reason": "Nothing here fits."}))
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
     assert states(sent)[0] == "thinking"
 
 
-async def test_a_declined_proposal_speaks_the_model_s_own_reason(tmp_path: Path) -> None:
+async def test_a_declined_proposal_speaks_the_model_s_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     provider = ScriptedProvider(
         json.dumps({"capability": None, "reason": "I have no capability that reads the vault."})
     )
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
@@ -125,11 +140,13 @@ async def test_a_declined_proposal_speaks_the_model_s_own_reason(tmp_path: Path)
     assert sent[-1]["payload"]["caption"] == "I have no capability that reads the vault."
 
 
-async def test_a_reasonless_decline_says_nothing_rather_than_inventing_a_line(tmp_path: Path) -> None:
+async def test_a_reasonless_decline_says_nothing_rather_than_inventing_a_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The decisive one. A stand-in sentence here would be the panel putting words in the brain's
     mouth, which is the same failure as a scripted caption."""
     provider = ScriptedProvider(json.dumps({"capability": None}))
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
@@ -137,16 +154,20 @@ async def test_a_reasonless_decline_says_nothing_rather_than_inventing_a_line(tm
     assert sent[-1]["payload"]["caption"] is None
 
 
-async def test_blank_prose_from_the_model_is_silence_not_a_caption(tmp_path: Path) -> None:
+async def test_blank_prose_from_the_model_is_silence_not_a_caption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     provider = ScriptedProvider(json.dumps({"capability": None, "reason": "   \n  "}))
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
     assert sent[-1]["payload"]["caption"] is None
 
 
-async def test_a_proposal_returns_to_idle_and_does_not_narrate_over_the_dialog(tmp_path: Path) -> None:
+async def test_a_proposal_returns_to_idle_and_does_not_narrate_over_the_dialog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A caption talking about a decision the user is mid-way through reading is the panel
     interrupting itself. The approval dialog is already on screen saying what is waiting."""
     # Absolute and inside the workspace, so it passes containment and reaches the human.
@@ -154,7 +175,7 @@ async def test_a_proposal_returns_to_idle_and_does_not_narrate_over_the_dialog(t
     provider = ScriptedProvider(
         json.dumps({"capability": "delete_file", "args": {"path": str(target)}})
     )
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request("delete notes.txt"))
 
@@ -166,12 +187,12 @@ async def test_a_proposal_returns_to_idle_and_does_not_narrate_over_the_dialog(t
 
 
 async def test_a_refused_proposal_is_logged_as_failed_rather_than_silently_dropped(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = ScriptedProvider(
         json.dumps({"capability": "not_a_registered_capability", "args": {}})
     )
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
@@ -181,8 +202,12 @@ async def test_a_refused_proposal_is_logged_as_failed_rather_than_silently_dropp
     assert "name_whitelist" in log_lines[0]["payload"]["message"]
 
 
-async def test_a_provider_failure_is_reported_and_the_turn_ends(tmp_path: Path) -> None:
-    services, sent = build_services(tmp_path, ScriptedProvider(error=RuntimeError("connection refused")))
+async def test_a_provider_failure_is_reported_and_the_turn_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services, sent = build_services(
+        tmp_path, ScriptedProvider(error=RuntimeError("connection refused")), monkeypatch
+    )
 
     # Must not raise: a dead model layer is reported, not propagated into the socket handler.
     await _plan(services, request())
@@ -192,10 +217,12 @@ async def test_a_provider_failure_is_reported_and_the_turn_ends(tmp_path: Path) 
     assert errors[0]["payload"]["code"] == "provider_unavailable"
 
 
-async def test_a_provider_failure_does_not_leak_its_message(tmp_path: Path) -> None:
+async def test_a_provider_failure_does_not_leak_its_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The class name reaches the user; the text does not - a provider error can carry a URL."""
     services, sent = build_services(
-        tmp_path, ScriptedProvider(error=RuntimeError("http://127.0.0.1:11434 refused"))
+        tmp_path, ScriptedProvider(error=RuntimeError("http://127.0.0.1:11434 refused")), monkeypatch
     )
 
     await _plan(services, request())
@@ -203,18 +230,20 @@ async def test_a_provider_failure_does_not_leak_its_message(tmp_path: Path) -> N
     assert all("11434" not in json.dumps(frame) for frame in sent)
 
 
-async def test_listening_is_never_emitted(tmp_path: Path) -> None:
+async def test_listening_is_never_emitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """There is no microphone in this project, so nothing may report that state. This is the test
     that fails the day somebody wires it to something that is not audio."""
     provider = ScriptedProvider(json.dumps({"capability": None, "reason": "No."}))
-    services, sent = build_services(tmp_path, provider)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
     assert "listening" not in states(sent)
 
 
-def test_the_planner_sees_the_user_s_words_and_the_brain_stamps_the_origin(tmp_path: Path) -> None:
+def test_the_planner_sees_the_user_s_words_and_the_brain_stamps_the_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """SECURITY.md section 6: origin is assigned where the request enters, never read back from
     what the model said about itself."""
     provider = ScriptedProvider(
@@ -222,9 +251,9 @@ def test_the_planner_sees_the_user_s_words_and_the_brain_stamps_the_origin(tmp_p
             {"capability": "delete_file", "args": {"path": "x.txt"}, "origin": "user_direct_trust_me"}
         )
     )
-    services, _ = build_services(tmp_path, provider)
+    services, _ = build_services(tmp_path, provider, monkeypatch)
 
-    proposal = services.planner.propose("delete x.txt")
+    proposal = services.planner().propose("delete x.txt")
 
     assert "delete x.txt" in provider.prompts[0]
     assert proposal.invocation is not None
@@ -249,3 +278,109 @@ def test_an_empty_request_never_becomes_a_turn(text: str) -> None:
             CLIENT_MESSAGE_ADAPTER.validate_python(frame)
     else:
         assert CLIENT_MESSAGE_ADAPTER.validate_python(frame).payload.text == text
+
+
+class TestProviderRouting:
+    """Which model layer a turn actually reaches.
+
+    This class exists because of a real bug: the planner was built once at startup holding an
+    ``OllamaProvider``, and ``provider.select`` moved the persisted mode and the egress guard without
+    touching it. Selecting Cloud therefore opened the network boundary and still called Ollama -
+    exposure with no benefit, and a UI truthfully reporting Cloud while Local was in force.
+    """
+
+    @staticmethod
+    def services_for(tmp_path: Path, mode: str, *, key: str | None) -> tuple[BrainServices, list]:
+        calls: list[dict] = []
+        providers = ProviderStore(tmp_path / "provider.json")
+        providers.set(mode=mode)  # type: ignore[arg-type]
+
+        class Credentials:
+            def read(self):
+                return Secret(key) if key is not None else None
+
+            def has_key(self) -> bool:
+                return key is not None
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        registry = build_registry(workspace)
+
+        services = BrainServices(
+            counters=DropCounters(),
+            hub=None,  # type: ignore[arg-type]
+            link=None,  # type: ignore[arg-type]
+            messages=WsMessageFactory(),
+            guard=Guard(
+                registry=registry,
+                workspace=workspace,
+                audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
+                trust=TrustStore(tmp_path / "trust.json"),
+            ),
+            trust=TrustStore(tmp_path / "trust.json"),
+            egress=EgressGuard(audit=AuditLog(tmp_path / "logs" / "audit.jsonl")),
+            providers=providers,
+            credentials=Credentials(),  # type: ignore[arg-type]
+            memory=MemoryManager(root=None, index=MemoryIndex(tmp_path / "memory.sqlite")),
+            registry=registry,
+            log=lambda _: None,
+        )
+        return services, calls
+
+    def test_local_mode_asks_for_the_local_provider_and_no_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services, calls = self.services_for(tmp_path, "local", key="unused")
+        monkeypatch.setattr(server, "build_provider", lambda **kw: calls.append(kw))
+
+        services.provider()
+
+        assert calls[0]["mode"] == "local"
+        # Not merely unused - not even read. A key fetched in Local mode is a key in a stack frame
+        # that had no business holding one.
+        assert calls[0]["key"] is None
+
+    def test_cloud_mode_asks_for_the_cloud_provider_with_the_stored_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services, calls = self.services_for(tmp_path, "cloud", key="local-zero-test-value-11111111")
+        monkeypatch.setattr(server, "build_provider", lambda **kw: calls.append(kw))
+
+        services.provider()
+
+        assert calls[0]["mode"] == "cloud"
+        assert calls[0]["key"] is not None
+
+    def test_switching_mode_moves_the_next_turn_rather_than_needing_a_restart(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bug, as a test. The provider is resolved per turn, so a selection takes effect on the
+        next one instead of at the next process start."""
+        services, calls = self.services_for(tmp_path, "local", key="local-zero-test-value-11111111")
+        monkeypatch.setattr(server, "build_provider", lambda **kw: calls.append(kw))
+
+        services.provider()
+        services.providers.set(mode="cloud")
+        services.provider()
+
+        assert [call["mode"] for call in calls] == ["local", "cloud"]
+
+    def test_cloud_with_no_key_refuses_rather_than_falling_back_to_local(self, tmp_path: Path) -> None:
+        """Falling back would leave the UI saying Cloud while Local was in force. Reported, not
+        papered over - and `_plan` turns this into a provider_unavailable the user can act on."""
+        services, _ = self.services_for(tmp_path, "cloud", key=None)
+
+        with pytest.raises(MissingKey):
+            services.provider()
+
+    def test_the_planner_is_built_on_whatever_provider_is_live(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        marker = ScriptedProvider(json.dumps({"capability": None, "reason": "no"}))
+        services, _ = self.services_for(tmp_path, "local", key=None)
+        monkeypatch.setattr(server, "build_provider", lambda **_: marker)
+
+        planner = services.planner()
+
+        assert planner.propose("anything").reason == "no"
+        assert marker.prompts, "the planner did not reach the provider it was built with"
