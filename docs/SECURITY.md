@@ -157,7 +157,8 @@ sources becomes a capability name, an argument, a path, or a command line.
 | OS sensor readings | Trusted-structural | Displayed telemetry | Command generation. Sensor values are numbers; they are never interpolated into a command string. |
 | Local config file | Trusted, validated | Poll interval, thresholds, window state | Anything executable. Schema-validated on load; out-of-range values clamped; unknown keys rejected. |
 | Invocation / audit log | Trusted | Planner context, negative examples | — |
-| Messages from the ui layer | **Semi-trusted** | Approve/reject decisions on an invocation the backend already resolved, **and switching the approval gate itself off** (§5, added M3) | Constructing an invocation. The UI cannot originate a capability call. |
+| Messages from the ui layer | **Semi-trusted** | Approve/reject decisions on an invocation the backend already resolved; **switching the approval gate itself off** (§5, added M3); **selecting the model provider and supplying its key** (§11, added M4) | Constructing an invocation. The UI cannot originate a capability call. |
+| Model output — provider metadata (model names, error text) | **Untrusted** | Being displayed as text, and naming a model to select | Anything else. A model list arrives from a server; it is not a source of instructions or paths. |
 | Messages from the system layer | **Semi-trusted** | Telemetry display, capability results | Anything unvalidated. Every message is schema-checked; unvalidated fields are not read. |
 | File contents read from disk | **Untrusted** | Reader output shown to the user | Planner context, capability selection, argument construction |
 | Fetched web pages, repos, transcripts | **Untrusted** | Reader output shown to the user | Planner context, capability selection, argument construction |
@@ -371,7 +372,9 @@ The repository will be open-sourced. Write accordingly from the first commit.
 ### Rules
 
 - Secrets come from `os.environ.get()` or the Windows Credential Manager. Never from source, never
-  from a config file in the repo, never from a file next to the binary.
+  from a config file in the repo, never from a file next to the binary. **A key typed into the UI is
+  a path *into* Credential Manager** (added M4, §11), not a fourth storage location — it is written
+  straight there and never lands on disk in any other form.
 - A missing required secret is a **startup failure with a clear message**, not a runtime surprise
   three screens in.
 - Never a default value that is a real key.
@@ -507,3 +510,82 @@ Named so nobody spends a week discovering the reason independently:
 - **Sandboxing the capability handlers themselves.** The guard restricts *what* is invoked; it does
   not confine the handler once running. Handlers are trusted first-party code. If third-party
   handlers are ever loaded, this section is where that decision gets made.
+
+---
+
+## 11. The network boundary — decided in M4
+
+`ROADMAP.md` blocked M4 on one question: which providers are local and which are network calls,
+because the answer determines whether Local Zero makes outbound connections at all. **Answered by
+explicit decision of the user: Selectable Hybrid.**
+
+| Mode | Egress permitted | Key |
+|---|---|---|
+| **Local** (default) | **Loopback only.** Nothing leaves the machine. | none |
+| **Cloud (Gemini)** | Loopback, plus outbound to the Gemini endpoint | supplied by the user |
+
+**Local is the default on a fresh install**, so the state before anybody chooses anything is the one
+that sends nothing. Absence is not permission — the same rule `trust.json` follows.
+
+"No outbound connections" is stated precisely as **no non-loopback egress**, because local model
+discovery talks to Ollama on `127.0.0.1:11434`. A rule written as "no network" would be violated by
+the product's own local path on the first run, and a rule nobody can follow gets edited rather than
+obeyed.
+
+### What enforces this, and what each mechanism cannot do
+
+Written out because the alternative is a document that implies a stronger guarantee than the code
+provides. By the time `socket.connect()` runs, DNS has already resolved and the guard sees an **IP,
+not a hostname**. The Gemini endpoint is anycast and its addresses rotate, so a hostname allowlist at
+the socket layer is not a thing that can be honoured.
+
+| Mechanism | Enforces | Does **not** enforce |
+|---|---|---|
+| Socket guard, installed at startup | Loopback-only vs loopback-plus-outbound, process-wide, against **any** library including transitive dependencies | *Which* remote host is reached |
+| The provider client | One pinned base URL, TLS, no cross-host redirect | Anything a different library does |
+| Audit of every non-loopback connect | That egress is **visible** | That it was prevented |
+
+**In Local mode the first mechanism is total**: nothing non-loopback connects, whatever attempts it.
+That is the mode with a hard guarantee.
+
+**In Cloud mode the host restriction rests on the second mechanism**, which constrains the code we
+wrote and nothing else. The third exists precisely because the second is not enforcement: an egress
+we did not intend is recorded even where it was not blocked. Anyone reading this should understand
+Cloud mode as "outbound is on, aimed at one endpoint by construction, and every departure is logged"
+— not as "outbound is pinned at the OS level".
+
+Windows Firewall rules would enforce it properly and are **not available**: creating them requires
+elevation, which red line 11 forbids outright.
+
+### Embeddings are local in both modes
+
+Cloud mode permits outbound for *completions*. It does not permit outbound for embeddings, and that
+is a separate rule rather than a consequence of the first.
+
+Indexing the memory vault means embedding its entire contents. An embedding call that crossed the
+network would therefore ship the user's own notes to a provider one chunk at a time — a bulk export
+of the most personal thing in the product, arriving as a side effect of a switch the user flipped to
+get a better answer to one question. `GeminiProvider.embed` raises rather than being merely unused,
+so the rule is enforced where it would otherwise be a convention nobody remembers.
+
+### The key
+
+Entered in the UI and stored in **Windows Credential Manager** — never in a file, never in the
+repository, never in `.env`. See §7, which this extends rather than contradicts: UI entry is a path
+*into* Credential Manager, not a new storage location.
+
+The key crosses the WebSocket once, on a loopback connection, in a `credential.set` frame. That frame
+is never logged, never audited, and never echoed in a validation error. The UI clears the field on
+send and never renders the value back; it displays only *whether* a key is stored.
+
+The pre-commit hook from M2 would catch a key committed by accident, and it is not the reason for any
+of the above. A plaintext key on disk is compromised the moment anything running as this user reads
+it, whether or not it is ever committed.
+
+### A note about the local provider that is not ours to fix
+
+On this machine `OLLAMA_HOST=0.0.0.0:11434`, which means the user's model server listens on **every
+interface** and is reachable from their LAN. That is Ollama's configuration and outside Local Zero's
+control, but a product that calls itself local-first should say so rather than let it be assumed
+private. Local mode guarantees *Local Zero* sends nothing off the machine; it says nothing about what
+else on the machine is listening.
