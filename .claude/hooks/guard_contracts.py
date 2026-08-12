@@ -21,6 +21,7 @@ Wired up by .claude/settings.json. See docs/CONTRACTS.md section 6.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +39,14 @@ def target_path(event: dict) -> str:
 
 
 def repo_root(event: dict) -> Path:
-    return Path(event.get("cwd") or Path.cwd())
+    """Where the repository is, independent of where the tool happened to be run from.
+
+    ``CLAUDE_PROJECT_DIR`` first: every path decision below is made relative to this, and a working
+    directory that has moved into a subfolder would make ``is_contract_file`` stop matching. That
+    failure is silent - the guard simply never fires again - which is the worst way for a guard to
+    break.
+    """
+    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd") or Path.cwd())
 
 
 def is_contract_file(path_text: str, root: Path) -> bool:

@@ -1,6 +1,8 @@
 # Local Zero — Architecture
 
-**Status:** M0 decision document. No implementation code exists yet.
+**Status:** written in M0 as a decision document; **M0–M4.5 are built and gated**, M5 is in progress.
+The decisions below are the ones the code was built against, and where measurement has since
+contradicted or confirmed one, that is recorded here rather than left to be inferred from the diff.
 **Target:** Windows 11 x64, single user, local only. i7-14700KF / RX 7800 XT 16 GB / 64 GB DDR5.
 **Scope:** layer boundaries, runtime justification, privilege model, sensor strategy, IPC choice,
 failure behaviour.
