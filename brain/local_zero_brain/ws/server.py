@@ -37,8 +37,9 @@ from local_zero_brain.credentials import CredentialStore, Secret
 from local_zero_brain.ipc.pipe_client import DEFAULT_PIPE_NAME, PipeEvent, SystemPipeClient
 from local_zero_brain.link import SystemLink
 from local_zero_brain.metrics import DropCounters
+from local_zero_brain.answerer import Answerer
 from local_zero_brain.planner import Planner, Proposal
-from local_zero_brain.llm.provider import MissingKey, Provider, build_provider
+from local_zero_brain.llm.provider import MissingKey, Provider, ProviderError, build_provider
 from local_zero_brain.llm.ollama import DEFAULT_MODEL as LOCAL_MODEL, OllamaProvider
 from local_zero_brain.llm.gemini import DEFAULT_MODEL as CLOUD_MODEL
 from local_zero_brain.memory.index import MemoryIndex
@@ -122,6 +123,15 @@ class BrainServices:
         impossible rather than merely unlikely. Construction is two attribute assignments.
         """
         return Planner(provider=self.provider(), registry=self.registry)
+
+    def answerer(self) -> Answerer:
+        """An answerer on the same provider. Rebuilt per turn, for the same reason.
+
+        Note what is *not* passed: the registry. The answerer builds an empty one and there is no
+        argument that could give it another, which is the property that lets its output go straight
+        into a caption without going anywhere near the guard.
+        """
+        return Answerer(provider=self.provider())
 
     async def invoke(self, invocation: Invocation) -> Verdict:
         """The single entry point for proposing an operation.
@@ -538,8 +548,11 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
     await services.hub.broadcast(services.messages.turn_state(state="idle", since=finished))
 
 
-def _propose(services: BrainServices, planner: Planner, text: str) -> Proposal:
-    """Recall, then propose. Runs on a worker thread; both halves block.
+def _turn(services: BrainServices, text: str) -> tuple[Proposal, str | None]:
+    """Recall once, then propose - and answer from the same notes when nothing was proposed.
+
+    Runs on a worker thread; every part of it blocks. Returns the proposal and, when the planner
+    named no capability, the answer to put in the caption.
 
     **The vault goes to whichever provider is selected, including the cloud one.** That is a decision
     taken deliberately and it is the sharpest edge in this file: in Cloud mode the chunks recalled
@@ -548,10 +561,23 @@ def _propose(services: BrainServices, planner: Planner, text: str) -> Proposal:
     user did not know they had enabled is not a feature.
 
     Only ``recall_trusted`` is called, so what travels is notes the user wrote themselves.
-    Agent-written memory is ``UntrustedChunk`` and has no conversion to the type ``assemble_context``
-    accepts, which is the same wall that keeps it out of the local planner.
+    Agent-written memory is ``UntrustedChunk`` and has no conversion to the type either the planner
+    or the answerer accepts.
+
+    The recall happens **once** and both components see the same notes. Recalling twice would let
+    the answer be drawn from different notes than the proposal was judged against, and a user asking
+    "why did it do that" would be reading an explanation of a decision that was never made.
     """
-    return planner.propose(text, context=services.memory.recall_trusted(text))
+    notes = services.memory.recall_trusted(text)
+    proposal = planner_result = services.planner().propose(text, context=notes)
+
+    if planner_result.invocation is not None:
+        return proposal, None
+
+    # Nothing to do, so answer instead. The answerer holds an empty registry by construction, so
+    # this branch cannot reach an executor however persuasive the notes are - what comes back is
+    # prose, and the only thing done with it is putting it in a caption.
+    return proposal, services.answerer().answer(text, notes)
 
 
 async def _plan(services: BrainServices, message: TurnRequest) -> None:
@@ -578,7 +604,9 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
     await services.hub.broadcast(services.messages.turn_state(state="thinking", since=utc_now()))
 
     try:
-        planner = services.planner()
+        # Resolved before the worker thread so a missing key is reported as itself rather than as a
+        # generic planning failure.
+        services.provider()
     except MissingKey as error:
         # Its own branch because the message is worth passing through verbatim: build_provider's
         # wording tells the user what to do about it, and "failed with MissingKey" would not.
@@ -590,17 +618,31 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
         return
 
     try:
-        # Off the event loop: both the recall and the completion are blocking, and holding the loop
+        # Off the event loop: the recall, the proposal and the answer all block, and holding the loop
         # for the length of them would stall every socket the brain has - including the telemetry the
         # user is watching while they wait.
-        proposal = await asyncio.to_thread(_propose, services, planner, text)
+        proposal, answer = await asyncio.to_thread(_turn, services, text)
+    except ProviderError as error:
+        # ProviderError's own text is built from a status code and a fixed table - it never contains
+        # a response body, a URL or a key - so it is passed through. It is the difference between
+        # "quota reached, wait or switch to Local" and "it failed with ProviderError", and the user
+        # can act on exactly one of those.
+        services.log(f"planning failed: {type(error).__name__}")
+        await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
+        await services.hub.broadcast(
+            services.messages.error(
+                code="provider_unavailable",
+                message=f"Nothing was proposed and nothing ran: {error}.",
+            )
+        )
+        return
     except Exception as error:  # noqa: BLE001 - a provider may raise anything; none of it may escape
         services.log(f"planning failed: {type(error).__name__}")
         await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
         await services.hub.broadcast(
             services.messages.error(
                 code="provider_unavailable",
-                # The class name, not the message: a provider's text can carry a URL or a path.
+                # The class name, not the message: an arbitrary exception's text can carry a path.
                 message=f"The model layer did not answer. It failed with {type(error).__name__}. "
                 f"Nothing was proposed and nothing ran.",
             )
@@ -608,10 +650,13 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
         return
 
     if proposal.invocation is None:
+        # The answer, not the planner's reason. "No listed capability fits" is true and useless: it
+        # explains why nothing ran, to a user who asked a question rather than for an operation. The
+        # reason stays in the log for the case where the answerer itself had nothing to say.
+        if answer is None or not answer.strip():
+            services.log(f"planner declined with no answer: {proposal.reason!r}")
         await services.hub.broadcast(
-            services.messages.turn_state(
-                state="speaking", since=utc_now(), caption=proposal.reason
-            )
+            services.messages.turn_state(state="speaking", since=utc_now(), caption=answer)
         )
         return
 

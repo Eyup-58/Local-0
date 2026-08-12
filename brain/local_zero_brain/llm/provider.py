@@ -117,6 +117,37 @@ def complete_json(
     )
 
 
+#: What each status means to somebody reading the panel, rather than to somebody reading an RFC.
+#:
+#: Derived from the status alone, so nothing here can leak: the response body is never consulted.
+#: 429 has its own entry because it is the one a free-tier key hits in ordinary use, and reporting
+#: that as a generic failure sends the user to check their key and their network when neither is
+#: wrong. Found by running it - the quota ran out while verifying Gemini.
+_HTTP_REASONS = {
+    400: "the provider rejected the request as malformed",
+    401: "the provider did not accept the key. Check the stored key, or switch back to Local mode",
+    403: "the key was refused for this model. It may not be enabled for this account",
+    404: "the provider has no such model. The pinned model name may have been retired",
+    429: (
+        "the provider's rate limit or quota has been reached. Nothing is wrong with the key - wait "
+        "and ask again, or switch to Local mode, which has no quota"
+    ),
+    500: "the provider reported an internal error",
+    503: "the provider is temporarily unavailable",
+}
+
+
+def _http_reason(code: int) -> str:
+    known = _HTTP_REASONS.get(code)
+    if known is not None:
+        return known
+
+    # A range rather than a bare code, so an unlisted status still says whose fault it is.
+    if 500 <= code < 600:
+        return f"the provider reported a server error (HTTP {code})"
+    return f"the provider refused the request (HTTP {code})"
+
+
 def post_json(
     url: str, payload: dict[str, Any], *, headers: dict[str, str] | None = None, timeout: int = DEFAULT_TIMEOUT_SECONDS
 ) -> dict[str, Any]:
@@ -136,9 +167,11 @@ def post_json(
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - url is pinned by the caller
             body = response.read()
     except urllib.error.HTTPError as error:
-        # The status and nothing else. A provider's error body can echo the request, and the request
-        # carries a key in a header on the cloud path.
-        raise ProviderError(f"the provider answered with HTTP {error.code}") from None
+        # The status and what it means, never the body. A provider's error body can echo the request,
+        # and the request carries a key in a header on the cloud path. The code itself is safe, and
+        # on its own it is useless to whoever is reading the panel: "HTTP 429" sends somebody to
+        # check their network when what actually happened is that they ran out of free quota.
+        raise ProviderError(_http_reason(error.code)) from None
     except OSError as error:
         # EgressBlocked is an OSError, and urllib wraps every OSError from the socket layer in a
         # URLError - so without unwrapping, the product's own boundary reports as a dead provider

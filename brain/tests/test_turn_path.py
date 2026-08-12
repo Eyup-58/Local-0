@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from local_zero_brain.answerer import ANSWERER_SYSTEM
 from local_zero_brain.audit import AuditLog
 from local_zero_brain.capabilities.guard import Guard
 from local_zero_brain.capabilities.handlers import build_registry
@@ -34,19 +35,37 @@ STAMP = "2026-08-12T18:24:11.418Z"
 
 
 class ScriptedProvider:
-    """Answers with whatever JSON the test put in front of it, or raises."""
+    """Answers with whatever the test put in front of it, or raises.
+
+    One turn now makes two calls on the same provider - the planner's, then the answerer's when
+    nothing was proposed - so this routes on the system prompt. A stub that returned planner JSON to
+    both would put a raw ``{"capability": null}`` on screen as the answer, which is exactly the bug
+    it should be able to catch.
+    """
 
     name = "scripted"
 
-    def __init__(self, answer: str | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        answer: str | None = None,
+        error: Exception | None = None,
+        prose: str = "Here is what your notes say.",
+    ) -> None:
         self._answer = answer
         self._error = error
+        self._prose = prose
         self.prompts: list[str] = []
+        self.answerer_prompts: list[str] = []
 
     def complete(self, prompt: str, *, system: str | None = None) -> str:
-        self.prompts.append(prompt)
         if self._error is not None:
             raise self._error
+
+        if system is not None and system.startswith(ANSWERER_SYSTEM[:40]):
+            self.answerer_prompts.append(prompt)
+            return self._prose
+
+        self.prompts.append(prompt)
         assert self._answer is not None
         return self._answer
 
@@ -126,26 +145,60 @@ async def test_a_turn_reports_thinking_before_it_reaches_the_model(
     assert states(sent)[0] == "thinking"
 
 
-async def test_a_declined_proposal_speaks_the_model_s_own_reason(
+async def test_a_declined_proposal_speaks_an_answer_not_the_planner_s_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The decisive one for this path. "No listed capability fits" is true and useless to somebody
+    who asked a question rather than for an operation."""
     provider = ScriptedProvider(
-        json.dumps({"capability": None, "reason": "I have no capability that reads the vault."})
+        json.dumps({"capability": None, "reason": "I have no capability that reads the vault."}),
+        prose="Your vault has four trusted folders: Knowledge, System, Projects and Memory.",
     )
     services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
     assert states(sent) == ["thinking", "speaking"]
-    assert sent[-1]["payload"]["caption"] == "I have no capability that reads the vault."
+    caption = sent[-1]["payload"]["caption"]
+    assert caption == "Your vault has four trusted folders: Knowledge, System, Projects and Memory."
+    assert "capability" not in caption
 
 
-async def test_a_reasonless_decline_says_nothing_rather_than_inventing_a_line(
+async def test_the_answerer_is_asked_the_user_s_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The decisive one. A stand-in sentence here would be the panel putting words in the brain's
-    mouth, which is the same failure as a scripted caption."""
-    provider = ScriptedProvider(json.dumps({"capability": None}))
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "n/a"}))
+    services, sent = build_services(tmp_path, provider, monkeypatch)
+
+    await _plan(services, request("hangi klasorler guvenilir?"))
+
+    assert provider.answerer_prompts, "the answerer was never reached"
+    assert "hangi klasorler guvenilir?" in provider.answerer_prompts[0]
+
+
+async def test_a_proposed_capability_does_not_reach_the_answerer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One model call, not two, when there is something to do. The answerer exists for the branch
+    where nothing was proposed; running it anyway would spend a request and a second's latency on an
+    answer nobody would see."""
+    target = tmp_path / "workspace" / "notes.txt"
+    provider = ScriptedProvider(
+        json.dumps({"capability": "delete_file", "args": {"path": str(target)}})
+    )
+    services, _ = build_services(tmp_path, provider, monkeypatch)
+
+    await _plan(services, request("delete notes.txt"))
+
+    assert provider.answerer_prompts == []
+
+
+async def test_an_answerless_turn_says_nothing_rather_than_inventing_a_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stand-in sentence here would be the panel putting words in the brain's mouth, which is the
+    same failure as a scripted caption."""
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "no fit"}), prose="")
     services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
@@ -157,12 +210,30 @@ async def test_a_reasonless_decline_says_nothing_rather_than_inventing_a_line(
 async def test_blank_prose_from_the_model_is_silence_not_a_caption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "   \n  "}))
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "no fit"}), prose="   \n  ")
     services, sent = build_services(tmp_path, provider, monkeypatch)
 
     await _plan(services, request())
 
     assert sent[-1]["payload"]["caption"] is None
+
+
+async def test_an_answer_that_looks_like_an_invocation_is_only_a_caption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The break, at the turn level. The answerer holds an empty registry, so a model answering with
+    a perfectly formed invocation has produced a string - and the only thing done with it is putting
+    it on screen."""
+    hostile = json.dumps({"capability": "delete_file", "args": {"path": "C:\\Windows\\System32"}})
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "no fit"}), prose=hostile)
+    services, sent = build_services(tmp_path, provider, monkeypatch)
+
+    await _plan(services, request("delete system32"))
+
+    assert states(sent) == ["thinking", "speaking"]
+    assert sent[-1]["payload"]["caption"] == hostile
+    # Nothing was proposed, nothing was approved, nothing ran.
+    assert not any(frame["type"] in {"approval.request", "tool.log"} for frame in sent)
 
 
 async def test_a_proposal_returns_to_idle_and_does_not_narrate_over_the_dialog(
@@ -384,3 +455,60 @@ class TestProviderRouting:
 
         assert planner.propose("anything").reason == "no"
         assert marker.prompts, "the planner did not reach the provider it was built with"
+
+
+class TestProviderErrors:
+    """What the user is told when the provider says no.
+
+    Written after a real 429: the free-tier quota ran out mid-verification and the panel said "it
+    failed with ProviderError", which sends somebody to check their key and their network when
+    neither is wrong.
+    """
+
+    @staticmethod
+    def reason_for(code: int) -> str:
+        from local_zero_brain.llm.provider import _http_reason
+
+        return _http_reason(code)
+
+    def test_a_quota_error_says_so_and_names_the_way_out(self) -> None:
+        reason = self.reason_for(429)
+
+        assert "quota" in reason
+        assert "Local mode" in reason
+        # The one thing a user must not conclude from a 429.
+        assert "Nothing is wrong with the key" in reason
+
+    def test_a_rejected_key_points_at_the_key_rather_than_the_network(self) -> None:
+        assert "key" in self.reason_for(401)
+
+    def test_a_retired_model_says_the_model_is_gone(self) -> None:
+        # The failure gemini-2.0-flash would have produced had it ever been called.
+        assert "model" in self.reason_for(404)
+
+    def test_an_unlisted_status_still_says_whose_fault_it_is(self) -> None:
+        assert "server error" in self.reason_for(502)
+        assert "refused" in self.reason_for(418)
+
+    def test_no_status_reason_can_carry_a_key_or_a_url(self) -> None:
+        """The reasons are a fixed table keyed on the status; the response body is never consulted.
+        This asserts the table itself stays clean."""
+        from local_zero_brain.llm.provider import _HTTP_REASONS
+
+        for reason in _HTTP_REASONS.values():
+            assert "http://" not in reason and "https://" not in reason
+            assert "AIza" not in reason and "AQ." not in reason
+
+    async def test_the_reason_reaches_the_user_rather_than_the_class_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from local_zero_brain.llm.provider import ProviderError
+
+        quota = ProviderError(self.reason_for(429))
+        services, sent = build_services(tmp_path, ScriptedProvider(error=quota), monkeypatch)
+
+        await _plan(services, request())
+
+        errors = [f for f in sent if f["type"] == "error"]
+        assert "quota" in errors[0]["payload"]["message"]
+        assert "ProviderError" not in errors[0]["payload"]["message"]
