@@ -1,0 +1,4 @@
+# core.autocrlf=true would give entrypoint.sh CRLF on a Windows checkout, and `#!/bin/sh\r`
+# fails inside the container as "no such file or directory". Keep these LF everywhere.
+*.sh text eol=lf
+Dockerfile text eol=lf

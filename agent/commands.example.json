@@ -1,6 +1,7 @@
 {
+  "id": 1,
   "commands": [
-    {"cmd": "echo hello from jarvis"},
-    {"cmd": "date"}
+    {"argv": ["echo", "hello from jarvis"]},
+    {"argv": ["date"]}
   ]
 }
