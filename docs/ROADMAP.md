@@ -214,14 +214,28 @@ stated rather than glossed.
 Multi-provider abstraction behind one interface. **This is where the injection surface opens.**
 Everything in M2 and M3 exists so that this milestone changes one thing at a time.
 
-**Blocked on an open question:** which providers are local (Ollama is already on this machine) and
-which are network calls. That answer determines whether Local Zero makes outbound connections at
-all, and it must be settled in `SECURITY.md` before code is written.
+**The question that blocked this milestone is answered.** Which providers are local and which are
+network calls is settled in `SECURITY.md` §11: **Selectable Hybrid** — Local (Ollama, loopback only)
+is the default on a fresh install, Cloud (Gemini) is opt-in, and the key lives in the Windows
+Credential Manager. Read §11 before touching this milestone; it states deliberately which of its
+three enforcement mechanisms is a hard guarantee and which two are not.
+
+Built in three slices, so the injection surface opens one piece at a time:
+
+| Slice | Contents |
+|---|---|
+| **M4a** | The egress guard, the provider interface, `Secret`, Credential Manager |
+| **M4b** | The planner/reader split, the two chunk types, the injection test set |
+| **M4c** | Provider selection and key entry in the UI — three additive WebSocket messages |
 
 Exit criteria:
 
 - [ ] Providers work through a single interface; keys come from the environment or Credential
       Manager, never from source
+- [ ] **No non-loopback egress in Local mode**, enforced process-wide against any library rather
+      than by convention, and every departure in Cloud mode recorded in the audit log
+- [ ] Embeddings are computed locally in **both** modes — indexing the vault through a network
+      provider would send its contents off the machine one chunk at a time
 - [ ] A missing key is a startup failure with a clear message, not a runtime surprise
 - [ ] No key appears in any log, error message, test fixture, or commit — a `Secret` wrapper makes
       accidental interpolation print `[redacted]`
@@ -231,6 +245,46 @@ Exit criteria:
 - [ ] The Reader path has an empty capability registry, asserted by a test
 - [ ] Trusted and untrusted retrieval have separate return types with no conversion between them,
       asserted by a test
+- [ ] `/threat-check` reports clean
+
+---
+
+## M4.5 — Memory
+
+Long-term memory in an Obsidian vault, with a local semantic index over it. Sequenced after M4
+because classification, conflict detection and consolidation all need a model, and placed before M5
+because a capability that can act is more dangerous once something can remember what to do.
+
+**The vault is the trusted namespace, and that is a decision with one sharp edge.** `SECURITY.md` §2
+defines trusted memory as the user's own notes, which is exactly what a vault is — but only while a
+human is the one writing it. The moment Local Zero writes a note that is later retrieved as trusted,
+the model can author its own instructions and read them back next session, which is the structural
+break in §2 undone from the inside.
+
+So trust follows **who wrote it**, recorded in each note's frontmatter, not where the file sits:
+
+| Location | Trust | Written by |
+|---|---|---|
+| `Memory/`, `Projects/`, `Knowledge/`, `System/` | trusted | the user, by hand |
+| `Memory/LocalZero/`, `Conversations/` | **untrusted** | Local Zero, `source: agent` |
+| `Archive/` | untrusted | the forgetting path |
+
+Promotion from agent-written to trusted is a human moving a file. There is no API for it.
+
+Exit criteria:
+
+- [ ] A trusted note reaches the planner; an `UntrustedChunk` provably cannot — the type has no
+      conversion to `TrustedChunk` and a test asserts it
+- [ ] Agent-written memory lands in `Memory/LocalZero/` and is retrieved as untrusted, tested with
+      an injection fixture that reaches the Reader and produces no invocation
+- [ ] Vault writes go through **registered capabilities** with `allowed_roots` limited to
+      `Memory/LocalZero/` and `Archive/`; every other vault path is on the guard's protected list,
+      with a test per path
+- [ ] Forgetting archives by default; permanent deletion is `destructive` and needs its own approval
+- [ ] Embeddings never leave the machine in either mode — test
+- [ ] Incremental reindex touches only changed files, **measured** rather than asserted
+- [ ] Missing vault, corrupt frontmatter, absent Ollama and a corrupt index each degrade rather than
+      crash: telemetry and approval keep working with memory switched off
 - [ ] `/threat-check` reports clean
 
 ---
