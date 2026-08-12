@@ -512,3 +512,79 @@ class TestProviderErrors:
         errors = [f for f in sent if f["type"] == "error"]
         assert "quota" in errors[0]["payload"]["message"]
         assert "ProviderError" not in errors[0]["payload"]["message"]
+
+
+class TestRefusedProposalStillAnswers:
+    """What the user sees when the model proposes an operation and the guard refuses it.
+
+    Found by running the real thing against a real vault: asked "which folders are trusted?",
+    qwen2.5:14b proposed `read_text_file`, the guard refused it at argument_schema, and the turn
+    ended with an idle state and nothing on screen. The guard did its job; the panel then said
+    nothing at all to somebody who had asked a question.
+    """
+
+    @staticmethod
+    def refusing_provider(prose: str = "Knowledge, System, Projects and Memory.") -> ScriptedProvider:
+        # A capability that exists but with arguments the schema rejects, so the guard denies it
+        # rather than the name whitelist - the shape the real failure took.
+        return ScriptedProvider(
+            json.dumps({"capability": "read_text_file", "args": {"wrong_field": 1}}), prose=prose
+        )
+
+    async def test_a_refused_proposal_still_answers_the_question(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = self.refusing_provider()
+        services, sent = build_services(tmp_path, provider, monkeypatch)
+
+        await _plan(services, request("hangi klasorler guvenilir?"))
+
+        assert states(sent) == ["thinking", "speaking"]
+        assert sent[-1]["payload"]["caption"] == "Knowledge, System, Projects and Memory."
+
+    async def test_the_refusal_is_still_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Answering afterwards must not quietly replace the record that the guard stopped
+        something."""
+        services, sent = build_services(tmp_path, self.refusing_provider(), monkeypatch)
+
+        await _plan(services, request())
+
+        logs = [f for f in sent if f["type"] == "tool.log"]
+        assert len(logs) == 1
+        assert logs[0]["payload"]["status"] == "failed"
+        assert "Refused at" in logs[0]["payload"]["message"]
+
+    async def test_nothing_is_executed_on_the_refused_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The point that matters. The answer comes from a component with an empty registry; the
+        refusal stands and no approval is raised."""
+        services, sent = build_services(tmp_path, self.refusing_provider(), monkeypatch)
+
+        await _plan(services, request())
+
+        assert not any(f["type"] == "approval.request" for f in sent)
+        assert not any(f["payload"].get("status") == "ok" for f in sent if f["type"] == "tool.log")
+
+    async def test_a_refusal_the_answerer_cannot_follow_reports_rather_than_going_quiet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the answer itself fails, the user is told - the old behaviour was silence, and silence
+        after a refusal is the worst of both."""
+        from local_zero_brain.llm.provider import ProviderError
+
+        class RefuseThenFail(ScriptedProvider):
+            def complete(self, prompt: str, *, system: str | None = None) -> str:
+                if system is not None and system.startswith(ANSWERER_SYSTEM[:40]):
+                    raise ProviderError("the provider's rate limit or quota has been reached")
+                return json.dumps({"capability": "read_text_file", "args": {"wrong_field": 1}})
+
+        services, sent = build_services(tmp_path, RefuseThenFail(), monkeypatch)
+
+        await _plan(services, request())
+
+        errors = [f for f in sent if f["type"] == "error"]
+        assert errors, "a failed answer after a refusal must not be silent"
+        assert "refused" in errors[0]["payload"]["message"]

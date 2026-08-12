@@ -12,8 +12,12 @@ where nothing looks wrong.
 
 **FTS5 is the ranking, embeddings are an optional second opinion.** Full-text search ships working;
 the vector path is written and switches itself off when no embedding model answers, recording that
-in ``status()`` rather than quietly returning worse results. On this machine today it is off:
-`nomic-embed-text` is not installed and `gemma4:26b` reports no embedding capability.
+in ``status()`` rather than quietly returning worse results.
+
+That switch earned itself on 2026-08-12. `nomic-embed-text` was not installed, so search ran on
+keywords alone and said so in ``status()`` the whole time - degraded visibly rather than silently.
+Once the model was pulled, the same code embedded every chunk with no change here, and recall began
+matching questions that share no words with the note answering them.
 
 The MATCH expression is built from tokens rather than from the query string. FTS5 has a real
 expression grammar - quotes, ``NEAR``, column filters, ``*`` - and a query here can be derived from a
@@ -403,12 +407,19 @@ class MemoryIndex:
         megabytes of floats and a few milliseconds; if a vault ever grows enough for that to matter,
         this is where an approximate index would go.
         """
+        # The vector pass runs first because embedding the query is also the probe.
+        #
+        # Checking the flag before trying could not work, and did not: it starts False and only a
+        # successful embedding sets it, so a process that indexed nothing new this run skipped the
+        # vector pass entirely - with every chunk's embedding already sitting in the database. A
+        # restarted brain over an unchanged vault silently searched by keyword alone, which is the
+        # exact failure the flag exists to make visible. Found by running it.
+        vector = self._vector_rows(query, trusted=trusted, limit=limit)
         keyword = self._keyword_rows(query, trusted=trusted, limit=limit)
 
         if not self._embeddings_available:
             return keyword
 
-        vector = self._vector_rows(query, trusted=trusted, limit=limit)
         return _fuse(keyword, vector)[:limit]
 
     def _keyword_rows(self, query: str, *, trusted: int, limit: int) -> list[tuple]:

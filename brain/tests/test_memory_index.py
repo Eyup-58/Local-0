@@ -254,10 +254,31 @@ class TestEmbeddings:
         assert index.status().embeddings_available is True
         assert index.status().embedded_chunks > 0
 
+    def test_a_restarted_index_still_searches_by_meaning(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """A fresh process over an already-indexed vault must not silently fall back to keywords.
+
+        The bug this covers: embeddings_available starts False and only a successful embedding sets
+        it. The vector pass used to be gated on that flag *before* anything had tried, so a restart
+        that reindexed nothing new skipped vector search entirely - with every chunk's embedding
+        already in the database. Embedding the query is the probe, so it has to run first.
+        """
+        store = tmp_path / "memory.sqlite"
+        MemoryIndex(store, provider=StubEmbedder()).reindex(vault)
+
+        # A second index over the same file: nothing to reindex, so nothing embeds at startup.
+        restarted = MemoryIndex(store, provider=StubEmbedder())
+        assert restarted.status().embeddings_available is False, "precondition: nothing probed yet"
+
+        restarted.search_trusted("anything", limit=3)
+
+        assert restarted.status().embeddings_available is True
+
     def test_a_provider_with_no_embedding_model_degrades_to_keyword_search(
         self, tmp_path: Path, vault: Path
     ) -> None:
-        """Today's actual state of this machine: gemma4 is installed, nomic-embed-text is not.
+        """Keyword search must keep working when no embedding model answers.
 
         Keyword search must keep working, and the status must say which mode is in force rather than
         quietly returning worse results.

@@ -19,15 +19,27 @@ from local_zero_brain.llm.provider import MalformedOutput, post_json
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 
-#: Verified present and answering on this machine, 2026-08-12. A model that is not installed fails
-#: with the server's own message, which names the model - better than anything this layer could
-#: invent.
-DEFAULT_MODEL = "gemma4:26b"
+#: Chosen by measurement on this machine, 2026-08-12, on the two jobs the brain actually gives a
+#: model - a planner turn needing one strict JSON object, and an answer grounded in vault notes:
+#:
+#:     qwen2.5:14b   planner 3/3 JSON   median  0.9s   answer  2.9s
+#:     gemma4:26b    planner 3/3 JSON   median 13.1s   answer 36.8s
+#:
+#: Both were correct every time; the 14b is roughly an order of magnitude faster at each. The
+#: planner runs on every turn and the user waits on it, so once correctness ties latency decides -
+#: and a 37-second answer is not a slower product, it is one nobody waits for. The larger model
+#: stays installed and remains a one-argument change if a harder task ever needs it.
+#:
+#: A model that is not installed fails with the server's own message, which names the model - better
+#: than anything this layer could invent.
+DEFAULT_MODEL = "qwen2.5:14b"
 
 #: Small, local, and used only for the vault index. Kept separate from the chat model because an
 #: index built with one embedding model is not comparable to vectors from another.
 #:
-#: NOT INSTALLED as of 2026-08-12 - `ollama pull nomic-embed-text` before memory can rank by meaning.
+#: Installed and answering as of 2026-08-12: memory ranks by meaning rather than by keyword. Until
+#: it was pulled, `embeddings_available` reported False and search fell back to keywords - degraded
+#: honestly rather than silently, which is what made the gap visible.
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 
 #: Longer than the shared default, because the local path and the network path fail differently.
@@ -38,6 +50,10 @@ DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 #: on top. At the shared 60s default that request timed out twice before being measured, and it
 #: reported as "the provider could not be reached", which is the wrong thing to tell somebody whose
 #: model is merely thinking.
+#:
+#: The VRAM figure is why the default moved: qwen2.5:14b is 9 GB and fits, which is most of the
+#: difference between a 2.9s answer and a 36.8s one. The generous timeout stays - it costs nothing
+#: when requests are fast, and the next model somebody installs may not fit either.
 LOCAL_TIMEOUT_SECONDS = 300
 
 

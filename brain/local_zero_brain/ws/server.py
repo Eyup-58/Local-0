@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,7 @@ from local_zero_brain.planner import Planner, Proposal
 from local_zero_brain.llm.provider import MissingKey, Provider, ProviderError, build_provider
 from local_zero_brain.llm.ollama import DEFAULT_MODEL as LOCAL_MODEL, OllamaProvider
 from local_zero_brain.llm.gemini import DEFAULT_MODEL as CLOUD_MODEL
+from local_zero_brain.memory.chunks import TrustedChunk
 from local_zero_brain.memory.index import MemoryIndex
 from local_zero_brain.memory.manager import MemoryManager
 from local_zero_brain.memory.vault import TRUSTED_FOLDERS
@@ -548,7 +549,14 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
     await services.hub.broadcast(services.messages.turn_state(state="idle", since=finished))
 
 
-def _turn(services: BrainServices, text: str) -> tuple[Proposal, str | None]:
+def _answer(services: BrainServices, text: str, notes: Sequence[TrustedChunk]) -> str:
+    """Answer from notes already recalled. Runs on a worker thread; the completion blocks."""
+    return services.answerer().answer(text, notes)
+
+
+def _turn(
+    services: BrainServices, text: str
+) -> tuple[Proposal, str | None, Sequence[TrustedChunk]]:
     """Recall once, then propose - and answer from the same notes when nothing was proposed.
 
     Runs on a worker thread; every part of it blocks. Returns the proposal and, when the planner
@@ -569,15 +577,17 @@ def _turn(services: BrainServices, text: str) -> tuple[Proposal, str | None]:
     "why did it do that" would be reading an explanation of a decision that was never made.
     """
     notes = services.memory.recall_trusted(text)
-    proposal = planner_result = services.planner().propose(text, context=notes)
+    proposal = services.planner().propose(text, context=notes)
 
-    if planner_result.invocation is not None:
-        return proposal, None
+    if proposal.invocation is not None:
+        # The notes come back so the caller can answer from them if the guard refuses the proposal,
+        # without recalling a second time.
+        return proposal, None, notes
 
     # Nothing to do, so answer instead. The answerer holds an empty registry by construction, so
     # this branch cannot reach an executor however persuasive the notes are - what comes back is
     # prose, and the only thing done with it is putting it in a caption.
-    return proposal, services.answerer().answer(text, notes)
+    return proposal, services.answerer().answer(text, notes), notes
 
 
 async def _plan(services: BrainServices, message: TurnRequest) -> None:
@@ -621,7 +631,7 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
         # Off the event loop: the recall, the proposal and the answer all block, and holding the loop
         # for the length of them would stall every socket the brain has - including the telemetry the
         # user is watching while they wait.
-        proposal, answer = await asyncio.to_thread(_turn, services, text)
+        proposal, answer, notes = await asyncio.to_thread(_turn, services, text)
     except ProviderError as error:
         # ProviderError's own text is built from a status code and a fixed table - it never contains
         # a response body, a URL or a key - so it is passed through. It is the difference between
@@ -662,11 +672,9 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
 
     verdict = await services.invoke(proposal.invocation)
 
-    # Back to idle whatever the verdict. If it is Pending the approval dialog is already up; if it
-    # was allowed outright, _execute has its own tool_running -> idle to report.
-    await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
-
     if isinstance(verdict, Denied):
+        # The refusal is recorded first: whatever is said next, the record shows the guard stopped
+        # an operation and at which step.
         await services.hub.broadcast(
             services.messages.tool_log(
                 at=utc_now(),
@@ -675,6 +683,34 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
                 status="failed",
             )
         )
+
+        # Then answer anyway. A model asked "which folders are trusted?" will often propose reading
+        # a file rather than declining, and the guard rightly refuses it - at which point the turn
+        # used to end with an idle state and nothing on screen. The user asked a question, the guard
+        # did its job, and the panel said nothing.
+        #
+        # Nothing is executed here. The refusal stands; this only uses notes already in hand, in the
+        # component that holds an empty registry.
+        try:
+            refused_answer = await asyncio.to_thread(_answer, services, text, notes)
+        except ProviderError as error:
+            await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
+            await services.hub.broadcast(
+                services.messages.error(
+                    code="provider_unavailable",
+                    message=f"The operation was refused and no answer could be given: {error}.",
+                )
+            )
+            return
+
+        await services.hub.broadcast(
+            services.messages.turn_state(state="speaking", since=utc_now(), caption=refused_answer)
+        )
+        return
+
+    # Back to idle. If the verdict is Pending the approval dialog is already up; if it was allowed
+    # outright, _execute has its own tool_running -> idle to report.
+    await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
 
 
 async def _apply_trust(services: BrainServices, message: TrustSet) -> None:
