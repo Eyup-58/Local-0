@@ -127,6 +127,17 @@ class Guard:
     def queue(self) -> ApprovalQueue:
         return self._queue
 
+    @property
+    def protected_paths(self) -> tuple[Path, ...]:
+        """What no capability may touch. Exposed so the wiring can be asserted rather than assumed.
+
+        Which paths end up in here is a property of how ``create_app`` builds the guard, not of
+        anything this class does - and the vault's trusted folders being among them is a gate
+        criterion. Without a reader, that can only be checked by reading the constructor call, so a
+        narrowed list would pass every behavioural test written against a hand-built guard.
+        """
+        return self._protected
+
     def audit_decision(self, pending: Pending, *, decision: Decision, reason: str) -> None:
         """Records how a queued request was finally settled.
 
