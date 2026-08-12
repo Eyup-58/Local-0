@@ -26,7 +26,7 @@ import { Counters } from "./components/Counters";
 import { CoreGrid } from "./components/CoreGrid";
 import { DeclaredGaps } from "./components/DeclaredGaps";
 import { Gauge } from "./components/Gauge";
-import { Caption, Dock, Rail, ReadingStrip, ToolLogList, TopBar } from "./components/Hud";
+import { AskBox, Caption, Dock, Rail, ReadingStrip, ToolLogList, TopBar } from "./components/Hud";
 import type { LinkTone, RailItem, Reading } from "./components/Hud";
 import { LinkStatus } from "./components/LinkStatus";
 import { MemoryControl } from "./components/MemoryControl";
@@ -216,7 +216,7 @@ function noticeFor(
 }
 
 export function App() {
-  const { state, now, decide, setTrust, selectProvider, setKey, reindexMemory } = useTelemetry();
+  const { state, now, decide, setTrust, selectProvider, setKey, reindexMemory, ask } = useTelemetry();
   const [panel, setPanel] = useState("tools");
   // Closed until asked for. The core is the page; a dock that opened itself would take half the
   // stage before the user had decided they wanted it.
@@ -331,6 +331,8 @@ export function App() {
         and buttons that actually drove it would be the UI deciding what the brain was doing.
       */}
       <div className="controls">
+        <AskBox onAsk={ask} connected={state.link === "open"} />
+
         <div className="controls__group" role="group" aria-label="Reported turn">
           {TURN_TRACK.map((entry) => (
             <span

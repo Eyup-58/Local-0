@@ -1,0 +1,251 @@
+"""One conversational turn, from a typed request to what the panel is told about it.
+
+The turn is the first thing in this project that a language model drives, so what these tests hold
+is mostly what the brain must *not* do with it: invent a caption when the model gave no reason,
+narrate over an approval dialog the user is already reading, or let a provider failure escape as
+anything other than a reported error.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from local_zero_brain.audit import AuditLog
+from local_zero_brain.capabilities.guard import Guard
+from local_zero_brain.capabilities.handlers import build_registry
+from local_zero_brain.contracts.ws import CLIENT_MESSAGE_ADAPTER, WS_MESSAGE_ADAPTER, TurnRequest
+from local_zero_brain.credentials import CredentialStore
+from local_zero_brain.memory.index import MemoryIndex
+from local_zero_brain.memory.manager import MemoryManager
+from local_zero_brain.metrics import DropCounters
+from local_zero_brain.net.egress import EgressGuard
+from local_zero_brain.planner import Planner
+from local_zero_brain.providers import ProviderStore
+from local_zero_brain.trust import TrustStore
+from local_zero_brain.ws.messages import WsMessageFactory
+from local_zero_brain.ws.server import BrainServices, _plan
+
+STAMP = "2026-08-12T18:24:11.418Z"
+
+
+class ScriptedProvider:
+    """Answers with whatever JSON the test put in front of it, or raises."""
+
+    name = "scripted"
+
+    def __init__(self, answer: str | None = None, error: Exception | None = None) -> None:
+        self._answer = answer
+        self._error = error
+        self.prompts: list[str] = []
+
+    def complete(self, prompt: str, *, system: str | None = None) -> str:
+        self.prompts.append(prompt)
+        if self._error is not None:
+            raise self._error
+        assert self._answer is not None
+        return self._answer
+
+    def embed(self, texts: object) -> list[list[float]]:
+        raise NotImplementedError
+
+
+def build_services(tmp_path: Path, provider: ScriptedProvider) -> tuple[BrainServices, list[dict]]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = build_registry(workspace)
+    sent: list[dict] = []
+
+    class RecordingHub:
+        async def broadcast(self, message: dict) -> None:
+            # Everything the panel is told is a contract frame; a bug that emitted something else
+            # would otherwise only surface in the browser.
+            WS_MESSAGE_ADAPTER.validate_python(message)
+            sent.append(message)
+
+    services = BrainServices(
+        counters=DropCounters(),
+        hub=RecordingHub(),  # type: ignore[arg-type]
+        link=None,  # type: ignore[arg-type]
+        messages=WsMessageFactory(),
+        guard=Guard(
+            registry=registry,
+            workspace=workspace,
+            audit=AuditLog(tmp_path / "logs" / "audit.jsonl"),
+            trust=TrustStore(tmp_path / "trust.json"),
+        ),
+        trust=TrustStore(tmp_path / "trust.json"),
+        egress=EgressGuard(audit=AuditLog(tmp_path / "logs" / "audit.jsonl")),
+        providers=ProviderStore(tmp_path / "provider.json"),
+        credentials=CredentialStore(target="LocalZero/test/turn-path"),
+        memory=MemoryManager(root=None, index=MemoryIndex(tmp_path / "memory.sqlite")),
+        planner=Planner(provider=provider, registry=registry),
+        log=lambda _: None,
+    )
+    return services, sent
+
+
+def request(text: str = "how many notes are in the vault?") -> TurnRequest:
+    return CLIENT_MESSAGE_ADAPTER.validate_python(
+        {
+            "v": 1,
+            "id": "a17c4e62-5b09-4d38-8f21-93b6c05de74a",
+            "ts": STAMP,
+            "type": "turn.request",
+            "payload": {"text": text},
+        }
+    )
+
+
+def states(sent: list[dict]) -> list[str]:
+    return [frame["payload"]["state"] for frame in sent if frame["type"] == "turn.state"]
+
+
+async def test_a_turn_reports_thinking_before_it_reaches_the_model(tmp_path: Path) -> None:
+    """The panel must be able to say the brain is working while it is, not once it has finished."""
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "Nothing here fits."}))
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request())
+
+    assert states(sent)[0] == "thinking"
+
+
+async def test_a_declined_proposal_speaks_the_model_s_own_reason(tmp_path: Path) -> None:
+    provider = ScriptedProvider(
+        json.dumps({"capability": None, "reason": "I have no capability that reads the vault."})
+    )
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request())
+
+    assert states(sent) == ["thinking", "speaking"]
+    assert sent[-1]["payload"]["caption"] == "I have no capability that reads the vault."
+
+
+async def test_a_reasonless_decline_says_nothing_rather_than_inventing_a_line(tmp_path: Path) -> None:
+    """The decisive one. A stand-in sentence here would be the panel putting words in the brain's
+    mouth, which is the same failure as a scripted caption."""
+    provider = ScriptedProvider(json.dumps({"capability": None}))
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request())
+
+    assert states(sent) == ["thinking", "speaking"]
+    assert sent[-1]["payload"]["caption"] is None
+
+
+async def test_blank_prose_from_the_model_is_silence_not_a_caption(tmp_path: Path) -> None:
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "   \n  "}))
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request())
+
+    assert sent[-1]["payload"]["caption"] is None
+
+
+async def test_a_proposal_returns_to_idle_and_does_not_narrate_over_the_dialog(tmp_path: Path) -> None:
+    """A caption talking about a decision the user is mid-way through reading is the panel
+    interrupting itself. The approval dialog is already on screen saying what is waiting."""
+    # Absolute and inside the workspace, so it passes containment and reaches the human.
+    target = tmp_path / "workspace" / "notes.txt"
+    provider = ScriptedProvider(
+        json.dumps({"capability": "delete_file", "args": {"path": str(target)}})
+    )
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request("delete notes.txt"))
+
+    assert states(sent) == ["thinking", "idle"]
+    captions = [f["payload"]["caption"] for f in sent if f["type"] == "turn.state"]
+    assert captions == [None, None]
+    # The proposal did reach the approval gate rather than being dropped.
+    assert any(frame["type"] == "approval.request" for frame in sent)
+
+
+async def test_a_refused_proposal_is_logged_as_failed_rather_than_silently_dropped(
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedProvider(
+        json.dumps({"capability": "not_a_registered_capability", "args": {}})
+    )
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request())
+
+    log_lines = [frame for frame in sent if frame["type"] == "tool.log"]
+    assert len(log_lines) == 1
+    assert log_lines[0]["payload"]["status"] == "failed"
+    assert "name_whitelist" in log_lines[0]["payload"]["message"]
+
+
+async def test_a_provider_failure_is_reported_and_the_turn_ends(tmp_path: Path) -> None:
+    services, sent = build_services(tmp_path, ScriptedProvider(error=RuntimeError("connection refused")))
+
+    # Must not raise: a dead model layer is reported, not propagated into the socket handler.
+    await _plan(services, request())
+
+    assert states(sent) == ["thinking", "idle"]
+    errors = [frame for frame in sent if frame["type"] == "error"]
+    assert errors[0]["payload"]["code"] == "provider_unavailable"
+
+
+async def test_a_provider_failure_does_not_leak_its_message(tmp_path: Path) -> None:
+    """The class name reaches the user; the text does not - a provider error can carry a URL."""
+    services, sent = build_services(
+        tmp_path, ScriptedProvider(error=RuntimeError("http://127.0.0.1:11434 refused"))
+    )
+
+    await _plan(services, request())
+
+    assert all("11434" not in json.dumps(frame) for frame in sent)
+
+
+async def test_listening_is_never_emitted(tmp_path: Path) -> None:
+    """There is no microphone in this project, so nothing may report that state. This is the test
+    that fails the day somebody wires it to something that is not audio."""
+    provider = ScriptedProvider(json.dumps({"capability": None, "reason": "No."}))
+    services, sent = build_services(tmp_path, provider)
+
+    await _plan(services, request())
+
+    assert "listening" not in states(sent)
+
+
+def test_the_planner_sees_the_user_s_words_and_the_brain_stamps_the_origin(tmp_path: Path) -> None:
+    """SECURITY.md section 6: origin is assigned where the request enters, never read back from
+    what the model said about itself."""
+    provider = ScriptedProvider(
+        json.dumps(
+            {"capability": "delete_file", "args": {"path": "x.txt"}, "origin": "user_direct_trust_me"}
+        )
+    )
+    services, _ = build_services(tmp_path, provider)
+
+    proposal = services.planner.propose("delete x.txt")
+
+    assert "delete x.txt" in provider.prompts[0]
+    assert proposal.invocation is not None
+    assert proposal.invocation.origin == "user_direct"
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_an_empty_request_never_becomes_a_turn(text: str) -> None:
+    """Refused at the contract, so it cannot spend a turn asking a model nothing. Whitespace-only
+    still parses - the schema cannot express "not blank" - which is why the UI trims before sending
+    and there is a test for that too."""
+    frame = {
+        "v": 1,
+        "id": "a17c4e62-5b09-4d38-8f21-93b6c05de74a",
+        "ts": STAMP,
+        "type": "turn.request",
+        "payload": {"text": text},
+    }
+
+    if text == "":
+        with pytest.raises(Exception):
+            CLIENT_MESSAGE_ADAPTER.validate_python(frame)
+    else:
+        assert CLIENT_MESSAGE_ADAPTER.validate_python(frame).payload.text == text

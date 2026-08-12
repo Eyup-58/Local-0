@@ -389,6 +389,31 @@ class ToolLog(ContractModel):
     payload: ToolLogPayload
 
 
+class TurnRequestPayload(ContractModel):
+    #: What the user typed. Non-empty: an empty request is an accidental submit wearing the shape of
+    #: a question, and forwarding it spends a turn asking a model nothing.
+    text: Annotated[str, Field(min_length=1, max_length=4000)]
+
+
+class TurnRequest(ContractModel):
+    """The only message that reaches the planner, and the trusted half of SECURITY.md section 2.
+
+    The planner may see what the user typed and nothing else. A frame arriving on the UI socket is
+    what "the human typed it" means here, which is why ``origin=user_direct`` is stamped by the brain
+    at the point the request enters and never read back from the model's reply.
+
+    The corollary is the rule that matters: nothing fetched, retrieved or summarised may be re-sent
+    as one of these. That would launder untrusted content into the trusted path in a single line
+    that would look entirely reasonable in review.
+    """
+
+    v: ProtocolVersion
+    id: MessageId
+    ts: Timestamp
+    type: Literal["turn.request"]
+    payload: TurnRequestPayload
+
+
 WsMessage = Annotated[
     ClientHello
     | ServerHello
@@ -406,7 +431,8 @@ WsMessage = Annotated[
     | MemoryStatus
     | MemoryReindex
     | TurnState
-    | ToolLog,
+    | ToolLog
+    | TurnRequest,
     Field(discriminator="type"),
 ]
 
@@ -416,7 +442,16 @@ WS_MESSAGE_ADAPTER: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 #: cannot construct a capability invocation. Accepting the full union inbound would let a browser tab
 #: send the brain a server.hello, or raise its own approval.request and then answer it.
 ClientMessage = Annotated[
-    ClientHello | ApprovalDecision | TrustSet | ProviderSelect | CredentialSet | MemoryReindex,
+    ClientHello
+    | ApprovalDecision
+    | TrustSet
+    | ProviderSelect
+    | CredentialSet
+    | MemoryReindex
+    #: The one inbound message whose payload reaches a language model. It carries prose, not an
+    #: invocation - the UI still cannot construct one - and what the planner proposes from it goes
+    #: through the same guard and approval gate as everything else.
+    | TurnRequest,
     Field(discriminator="type"),
 ]
 

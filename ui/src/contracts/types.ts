@@ -235,6 +235,15 @@ export type ToolLog = Envelope<
   }
 >;
 
+/**
+ * Something the user typed, on its way to the planner.
+ *
+ * The one message this tab sends whose payload reaches a language model, and the trusted half of
+ * SECURITY.md §2 — the planner may see what the user typed and nothing else. Nothing that arrived
+ * over this socket may be sent back out as one of these.
+ */
+export type TurnRequest = Envelope<"turn.request", { readonly text: string }>;
+
 /** Everything the brain may send to the UI. */
 export type ServerMessage =
   | ServerHello

@@ -58,6 +58,18 @@ export interface Telemetry {
   readonly setKey: (key: string) => void;
   /** Asks the brain to rescan the configured vault. It carries no path; the UI does not choose one. */
   readonly reindexMemory: () => void;
+  /**
+   * Sends something the user typed to the planner.
+   *
+   * The only message from this tab whose payload reaches a language model, and the trusted half of
+   * SECURITY.md §2: what goes in here must be what the user typed and nothing else. Never pass it a
+   * caption, a tool log line, or anything else that came back over this socket — that would launder
+   * untrusted content into the one path the planner is allowed to read.
+   *
+   * Returns false when there was nothing to send, so the caller can leave the box alone rather than
+   * clearing text that never left.
+   */
+  readonly ask: (text: string) => boolean;
 }
 
 export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
@@ -134,5 +146,14 @@ export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
     selectProvider: (mode) => send("provider.select", { mode }),
     setKey: (key) => send("credential.set", { key }),
     reindexMemory: () => send("memory.reindex", {}),
+    ask: (text) => {
+      // Trimmed here rather than at the contract, which can only express "not empty": a box holding
+      // one space would otherwise spend a whole turn asking the model about nothing.
+      const trimmed = text.trim();
+      if (trimmed.length === 0) return false;
+
+      send("turn.request", { text: trimmed });
+      return true;
+    },
   };
 }

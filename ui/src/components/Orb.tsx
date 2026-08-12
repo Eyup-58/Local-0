@@ -74,9 +74,15 @@ const DOCK_WIDTH = 472;
 
 /** Top bar plus the reading strip hanging below it. */
 const CHROME_TOP = 92;
-/** The caption stack and the control track, with and without a caption line to make room for. */
-const RESERVE_WITH_CAPTION = 330;
-const RESERVE_BARE = 240;
+/**
+ * What the bottom chrome needs: the ask box, the state track, and the caption stack above them.
+ *
+ * Measured against the CSS rather than guessed - `.controls` sits 22px up and is about 94px tall
+ * with the input, and `.caption-stack` starts at 152px. The bigger figure adds the caption's own
+ * three clamped lines.
+ */
+const RESERVE_WITH_CAPTION = 380;
+const RESERVE_BARE = 290;
 /** The outermost ring sits at this multiple of the core radius, so it sets the width needed. */
 const WIDEST_RING = 1.42;
 

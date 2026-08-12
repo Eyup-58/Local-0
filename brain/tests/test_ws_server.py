@@ -16,6 +16,7 @@ from conftest import ipc_hello
 from local_zero_brain.audit import AuditLog
 from local_zero_brain.capabilities.guard import Guard, Invocation, Pending
 from local_zero_brain.capabilities.handlers import build_registry
+from local_zero_brain.capabilities.registry import CapabilityRegistry
 from local_zero_brain.contracts.ws import WS_MESSAGE_ADAPTER
 from local_zero_brain.ipc.pipe_client import PipeConnected, PipeLine
 from local_zero_brain.credentials import CredentialStore
@@ -23,6 +24,7 @@ from local_zero_brain.memory.index import MemoryIndex
 from local_zero_brain.memory.manager import MemoryManager
 from local_zero_brain.metrics import DropCounters
 from local_zero_brain.net.egress import EgressGuard
+from local_zero_brain.planner import Planner
 from local_zero_brain.providers import ProviderStore
 from local_zero_brain.trust import TrustStore
 from local_zero_brain.ws.messages import WsMessageFactory
@@ -153,6 +155,10 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
         async def broadcast(self, message: dict) -> None:
             sent.append(message)
 
+    class UnusedProvider:
+        def complete(self, prompt: str, *, system: str | None = None) -> str:
+            raise AssertionError("this test must not reach the model layer")
+
     services = BrainServices(
         counters=DropCounters(),
         hub=RecordingHub(),  # type: ignore[arg-type]
@@ -164,6 +170,10 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
         providers=ProviderStore(tmp_path / "provider.json"),
         credentials=CredentialStore(target="LocalZero/test/ws-server"),
         memory=MemoryManager(root=None, index=MemoryIndex(tmp_path / "memory.sqlite")),
+        # Required but unused here: this test drives _execute directly, past the point a planner has
+        # anything to do. A provider that raises makes that explicit - if the path under test ever
+        # starts reaching the model, this fails loudly rather than quietly calling a real one.
+        planner=Planner(provider=UnusedProvider(), registry=CapabilityRegistry(())),
         log=lambda _: None,
     )
 

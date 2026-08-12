@@ -131,7 +131,7 @@ class TestThePlanner:
         what a model says about itself."""
         planner = Planner(provider=ObedientProvider(), registry=build_registry(tmp_path))
 
-        invocation = planner.propose("delete the sam file")
+        invocation = planner.propose("delete the sam file").invocation
 
         assert isinstance(invocation, Invocation)
         assert invocation.origin == "user_direct"
@@ -237,7 +237,7 @@ class TestTheThreeIngestPaths:
         planner = Planner(provider=Inventive(), registry=registry)
         guard = Guard(registry=registry, workspace=workspace, audit=AuditLog(tmp_path / "audit.jsonl"))
 
-        verdict = guard.evaluate(planner.propose("do the thing"))
+        verdict = guard.evaluate(planner.propose("do the thing").invocation)
 
         assert isinstance(verdict, Denied)
         assert verdict.step == "name_whitelist"
@@ -262,7 +262,7 @@ class TestTheThreeIngestPaths:
         planner = Planner(provider=Aiming(), registry=registry)
         guard = Guard(registry=registry, workspace=workspace, audit=AuditLog(tmp_path / "audit.jsonl"))
 
-        verdict = guard.evaluate(planner.propose("read the interesting file"))
+        verdict = guard.evaluate(planner.propose("read the interesting file").invocation)
 
         assert isinstance(verdict, Denied)
         assert verdict.step == "path_containment"

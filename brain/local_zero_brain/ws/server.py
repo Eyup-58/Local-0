@@ -18,7 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from local_zero_brain.audit import AuditLog
-from local_zero_brain.capabilities.guard import Guard, Invocation, Pending, Verdict
+from local_zero_brain.capabilities.guard import Denied, Guard, Invocation, Pending, Verdict
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.capabilities.paths import workspace_root
 from local_zero_brain.contracts.common import CONTRACT_VERSION
@@ -30,11 +30,13 @@ from local_zero_brain.contracts.ws import (
     MemoryReindex,
     ProviderSelect,
     TrustSet,
+    TurnRequest,
 )
 from local_zero_brain.credentials import CredentialStore, Secret
 from local_zero_brain.ipc.pipe_client import DEFAULT_PIPE_NAME, PipeEvent, SystemPipeClient
 from local_zero_brain.link import SystemLink
 from local_zero_brain.metrics import DropCounters
+from local_zero_brain.planner import Planner
 from local_zero_brain.llm.ollama import DEFAULT_MODEL as LOCAL_MODEL, OllamaProvider
 from local_zero_brain.llm.gemini import DEFAULT_MODEL as CLOUD_MODEL
 from local_zero_brain.memory.index import MemoryIndex
@@ -73,6 +75,9 @@ class BrainServices:
     credentials: CredentialStore
     #: Long-term memory over the Obsidian vault. Disabled, not broken, when there is no vault.
     memory: MemoryManager
+    #: Proposes operations from what the user typed. The only component that sees a turn.request, and
+    #: the only one that talks to a model about what to do - it proposes, the guard disposes.
+    planner: Planner
     log: Any = print
     #: Guard verdicts waiting on a human, by request_id.
     #:
@@ -153,8 +158,12 @@ def create_app(
     # come back next session as text the planner is allowed to act on.
     protected_memory = tuple(memory.root / folder for folder in TRUSTED_FOLDERS) if memory.root else ()
 
+    # Built once and shared with the planner below: what the model is told exists and what the guard
+    # will accept are then the same list by construction, rather than two places kept in step.
+    registry = build_registry(root, vault=memory.root)
+
     guard = Guard(
-        registry=build_registry(root, vault=memory.root),
+        registry=registry,
         workspace=root,
         audit=audit,
         trust=trust,
@@ -178,6 +187,9 @@ def create_app(
         providers=providers,
         credentials=CredentialStore(credential_target) if credential_target else CredentialStore(),
         memory=memory,
+        # The registry here is not the whitelist - the guard's step 1 is, and it runs again on
+        # whatever comes back regardless of what was offered to the model.
+        planner=Planner(provider=OllamaProvider(), registry=registry),
         log=log,
     )
 
@@ -389,6 +401,10 @@ async def _handle_ui_frame(websocket: WebSocket, services: BrainServices, frame:
         await _rescan_memory(services)
         return
 
+    if isinstance(message, TurnRequest):
+        await _plan(services, message)
+        return
+
     # A second client.hello on an established connection.
     services.counters.record_schema_violation()
     await websocket.send_json(
@@ -487,6 +503,72 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
         services.messages.tool_log(at=finished, capability=name, message="Completed.", status="ok")
     )
     await services.hub.broadcast(services.messages.turn_state(state="idle", since=finished))
+
+
+async def _plan(services: BrainServices, message: TurnRequest) -> None:
+    """One conversational turn: think, then either propose something or say why not.
+
+    The turn is *reported* at each step rather than inferred by the UI from elapsed time, which is
+    the whole reason turn.state exists. Three outcomes, and none of them invents prose:
+
+    * The model names a capability. It goes through ``invoke()`` into the same five-step guard chain
+      as everything else, and the turn returns to idle - the approval dialog is already on screen
+      saying what is waiting, and a caption narrating over it would be the panel talking about a
+      decision the user is in the middle of reading.
+    * The model declines. Its own reason becomes the caption and the turn is `speaking`. Without a
+      reason the caption is null, which renders as nothing: a stand-in sentence would be the panel
+      putting words in the brain's mouth.
+    * The model or the provider fails. The user is told, in the panel's voice, and the turn ends.
+
+    ``speaking`` is held rather than followed by an idle: there is no TTS here, so nothing marks an
+    utterance as finished, and dropping straight back to idle would blank the words the moment they
+    arrived. The next request moves it on.
+    """
+    text = message.payload.text
+
+    await services.hub.broadcast(services.messages.turn_state(state="thinking", since=utc_now()))
+
+    try:
+        # Off the event loop: complete_json is a blocking HTTP call to the model, and holding the
+        # loop for the length of it would stall every socket the brain has - including the telemetry
+        # the user is watching while they wait.
+        proposal = await asyncio.to_thread(services.planner.propose, text)
+    except Exception as error:  # noqa: BLE001 - a provider may raise anything; none of it may escape
+        services.log(f"planning failed: {type(error).__name__}")
+        await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
+        await services.hub.broadcast(
+            services.messages.error(
+                code="provider_unavailable",
+                # The class name, not the message: a provider's text can carry a URL or a path.
+                message=f"The model layer did not answer. It failed with {type(error).__name__}. "
+                f"Nothing was proposed and nothing ran.",
+            )
+        )
+        return
+
+    if proposal.invocation is None:
+        await services.hub.broadcast(
+            services.messages.turn_state(
+                state="speaking", since=utc_now(), caption=proposal.reason
+            )
+        )
+        return
+
+    verdict = await services.invoke(proposal.invocation)
+
+    # Back to idle whatever the verdict. If it is Pending the approval dialog is already up; if it
+    # was allowed outright, _execute has its own tool_running -> idle to report.
+    await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
+
+    if isinstance(verdict, Denied):
+        await services.hub.broadcast(
+            services.messages.tool_log(
+                at=utc_now(),
+                capability=proposal.invocation.capability,
+                message=f"Refused at {verdict.step}.",
+                status="failed",
+            )
+        )
 
 
 async def _apply_trust(services: BrainServices, message: TrustSet) -> None:

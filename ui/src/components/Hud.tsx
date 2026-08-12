@@ -13,7 +13,7 @@
  * measurement taken in JavaScript, so nothing here re-renders on a resize.
  */
 
-import type { ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 
 import { SensorGap } from "./SensorGap";
 import type { ToolLog, TurnStateName } from "../contracts/types";
@@ -231,6 +231,56 @@ export function Caption({ turn, caption, detail, notice }: CaptionProps) {
         </p>
       )}
     </div>
+  );
+}
+
+export interface AskBoxProps {
+  readonly onAsk: (text: string) => boolean;
+  /** False while the socket is down, so the box says so rather than swallowing what was typed. */
+  readonly connected: boolean;
+}
+
+/**
+ * The one place the user can put something into the system.
+ *
+ * It clears only when `onAsk` reports the text actually left. A box that emptied itself on a closed
+ * socket would look exactly like a box that had sent something, and the user would be waiting on a
+ * turn that never started.
+ */
+export function AskBox({ onAsk, connected }: AskBoxProps) {
+  const [text, setText] = useState("");
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (onAsk(text)) setText("");
+  };
+
+  return (
+    <form className="ask" onSubmit={submit}>
+      <input
+        className="ask__input"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        placeholder={connected ? "Ask Zero" : "Waiting for the brain"}
+        aria-label="Ask Zero"
+        disabled={!connected}
+        maxLength={4000}
+        autoComplete="off"
+      />
+      <button className="ask__send" type="submit" disabled={!connected} aria-label="Send request">
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          aria-hidden="true"
+        >
+          <path d="M4 12h15M13 6l6 6-6 6" />
+        </svg>
+      </button>
+    </form>
   );
 }
 

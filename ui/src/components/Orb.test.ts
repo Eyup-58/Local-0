@@ -121,7 +121,7 @@ describe("coreLayout", () => {
     const centre = height / 2 + offsetY;
 
     expect(centre - radius).toBeGreaterThanOrEqual(92);
-    expect(centre + radius).toBeLessThanOrEqual(height - 330);
+    expect(centre + radius).toBeLessThanOrEqual(height - 380);
   });
 
   it("never returns a negative radius, however little room there is", () => {

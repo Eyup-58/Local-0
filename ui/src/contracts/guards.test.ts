@@ -49,6 +49,10 @@ describe("contract examples", () => {
     // UI that could be handed a key by anything that reached the socket.
     "ws.credential-set.json",
     "ws.memory-reindex.json",
+    // A UI willing to *receive* a turn.request would take prose aimed at the planner from whatever
+    // reached the socket, and the planner is the one component that must only ever see what the
+    // user typed.
+    "ws.turn-request.json",
   ];
 
   it.each(valid.filter((name) => !uiSent.includes(name)))("accepts %s", (name) => {

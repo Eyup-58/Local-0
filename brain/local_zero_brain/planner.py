@@ -20,6 +20,7 @@ exactly why it is allowed to be a language model at all.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from local_zero_brain.capabilities.guard import Invocation
 from local_zero_brain.capabilities.registry import CapabilityRegistry
@@ -36,6 +37,25 @@ when no listed capability fits.
 
 Every proposal is checked by a guard and shown to the user for approval before anything runs. Do not
 describe what you intend to do; name the capability and its arguments."""
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """What the planner produced: at most one invocation, or the model's reason for declining.
+
+    Both fields exist because the two outcomes are equally real. An earlier version returned
+    ``Invocation | None`` and dropped the reason on the floor, which was fine while nothing but tests
+    called this - but the reason is the only thing the brain has to *say* when no capability fits,
+    and a UI that has to invent its own "sorry, I cannot help" is a UI that is eventually wrong about
+    why. ``reason`` is the model's own words, not a template.
+    """
+
+    invocation: Invocation | None
+    reason: str | None
+
+    @property
+    def declined(self) -> bool:
+        return self.invocation is None
 
 
 class Planner:
@@ -70,8 +90,8 @@ class Planner:
         notes = "\n\n".join(f"[{chunk.note_path}]\n{chunk.text}" for chunk in chunks)
         return f"Notes the user wrote:\n\n{notes}"
 
-    def propose(self, request: str, *, context: Sequence[TrustedChunk] = ()) -> Invocation | None:
-        """Asks for one operation. Returns None when the model declines to name one.
+    def propose(self, request: str, *, context: Sequence[TrustedChunk] = ()) -> Proposal:
+        """Asks for one operation. A declined proposal carries the model's reason instead.
 
         ``origin`` is stamped here, by the brain, at the point the request enters - never taken from
         anything the model said about itself. docs/SECURITY.md section 6.
@@ -83,7 +103,7 @@ class Planner:
 
         capability = answer.get("capability")
         if capability is None:
-            return None
+            return Proposal(invocation=None, reason=_reason_from(answer))
 
         if not isinstance(capability, str):
             raise MalformedOutput("the model named a capability that is not a string")
@@ -92,10 +112,32 @@ class Planner:
         if not isinstance(args, dict):
             raise MalformedOutput(f"the arguments for {capability} are not an object")
 
-        return Invocation(capability=capability, args=args, origin="user_direct")
+        return Proposal(
+            invocation=Invocation(capability=capability, args=args, origin="user_direct"),
+            reason=None,
+        )
 
     def _capability_list(self) -> str:
         lines = [
             f"- {capability.name} ({capability.side_effect})" for capability in self._registry
         ]
         return "Capabilities:\n" + "\n".join(lines) if lines else "Capabilities: none are registered."
+
+
+#: The longest decline reason that will be carried. Beyond this the model is not explaining, it is
+#: rambling, and the caption clamps to three lines on screen regardless.
+MAX_REASON_LENGTH = 2000
+
+
+def _reason_from(answer: dict) -> str | None:
+    """The model's stated reason for naming no capability, if it gave one that is usable.
+
+    A missing, blank or non-string reason becomes None rather than a stand-in sentence. None is a
+    gap the UI renders as one; a stand-in would put words in the brain's mouth, which is the same
+    mistake as a scripted caption and is exactly what ``turn.state.caption`` refuses to spell.
+    """
+    reason = answer.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+
+    return reason.strip()[:MAX_REASON_LENGTH]

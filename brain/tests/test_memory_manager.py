@@ -167,7 +167,7 @@ class TestIntoTheTwoComponents:
         planner = Planner(provider=ObedientProvider(), registry=registry)
         guard = Guard(registry=registry, workspace=workspace, audit=AuditLog(tmp_path / "audit.jsonl"))
 
-        invocation = planner.propose("show me the log", context=manager.recall_trusted("log"))
+        invocation = planner.propose("show me the log", context=manager.recall_trusted("log")).invocation
         verdict = guard.evaluate(invocation)
 
         assert invocation.capability != "delete_file"
