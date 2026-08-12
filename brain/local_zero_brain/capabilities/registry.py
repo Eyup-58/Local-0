@@ -92,11 +92,28 @@ class Capability:
                 "the guard routes on this value and an unknown one routes nowhere"
             )
 
-        if not self.allowed_roots:
+        # Required exactly when there is something to contain, and refused when there is not.
+        #
+        # "At least one root, always" reads as the stricter rule and is not. A capability with no
+        # path argument has nothing for step 3 to resolve: path_fields is empty, affected_paths
+        # comes back empty, and whatever roots were declared are never consulted. Handing such a
+        # capability the workspace to satisfy the constructor writes down a containment claim that
+        # no code enforces - and a control that is decoration is worse than an absent one, because
+        # a reader counts it as protection.
+        has_paths = bool(path_fields(self.args_schema))
+
+        if has_paths and not self.allowed_roots:
             raise ValueError(
-                "a capability must declare at least one entry in allowed_roots. An empty tuple "
-                "makes containment vacuous, and the two ways of being vacuous are 'refuses "
-                "everything' and 'permits everything'"
+                "a capability whose arguments include a path must declare at least one entry in "
+                "allowed_roots. An empty tuple makes containment vacuous, and the two ways of "
+                "being vacuous are 'refuses everything' and 'permits everything'"
+            )
+
+        if not has_paths and self.allowed_roots:
+            raise ValueError(
+                f"{self.name} declares allowed_roots but has no path arguments, so nothing will "
+                "ever be checked against them. Roots the guard cannot consult are a claim about "
+                "containment that nothing enforces; declare none"
             )
 
         for root in self.allowed_roots:

@@ -122,3 +122,70 @@ def test_a_capability_is_frozen() -> None:
 
     with pytest.raises(Exception):
         capability.side_effect = "read"  # type: ignore[misc]
+
+
+class PathlessArgs(BaseModel):
+    """A capability that takes no path at all. ``list_processes`` is the real one."""
+
+    limit: int = 50
+
+
+class TestAllowedRootsMeanWhatTheySay:
+    """``allowed_roots`` is the containment step's whole input, so it has to describe something.
+
+    The rule used to be "at least one root, always". That reads as strict and is not: a capability
+    with no path argument has nothing for the guard to contain, so ``path_fields`` is empty,
+    ``affected_paths`` is empty, and whatever roots were declared are never consulted. Handing such
+    a capability the workspace to satisfy the constructor writes a containment claim that no code
+    enforces - and a security control that is decoration is worse than an absent one, because a
+    reader counts it.
+
+    So the requirement is now conditional, in both directions.
+    """
+
+    def test_a_capability_with_a_path_still_needs_roots(self) -> None:
+        """The original rule, unchanged where it was doing work."""
+        with pytest.raises(ValueError, match="allowed_roots"):
+            Capability(
+                name="read_text_file",
+                args_schema=SampleArgs,
+                side_effect="read",
+                allowed_roots=(),
+                handler=handler,
+            )
+
+    def test_a_capability_with_no_path_may_declare_no_roots(self) -> None:
+        capability = Capability(
+            name="list_processes",
+            args_schema=PathlessArgs,
+            side_effect="read",
+            allowed_roots=(),
+            handler=handler,
+        )
+
+        assert capability.allowed_roots == ()
+
+    def test_a_capability_with_no_path_may_not_declare_roots_either(self) -> None:
+        """The half that makes this a rule rather than a relaxation.
+
+        Roots on a capability the guard will never check are a claim about containment that nothing
+        enforces. Refusing them at registration is what keeps the field readable as fact.
+        """
+        with pytest.raises(ValueError, match="no path arguments"):
+            Capability(
+                name="list_processes",
+                args_schema=PathlessArgs,
+                side_effect="read",
+                allowed_roots=(Path("C:/nowhere"),),
+                handler=handler,
+            )
+
+    def test_the_absolute_rule_still_applies_to_a_capability_that_has_paths(self) -> None:
+        with pytest.raises(ValueError, match="absolute"):
+            Capability(
+                name="read_text_file",
+                args_schema=SampleArgs,
+                side_effect="read",
+                allowed_roots=(Path("relative/root"),),
+                handler=handler,
+            )

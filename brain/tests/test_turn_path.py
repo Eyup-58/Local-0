@@ -689,7 +689,9 @@ class TestACapabilityThatReadsSomething:
                     name="list_things",
                     args_schema=NoArgs,
                     side_effect="read",
-                    allowed_roots=(tmp_path / "workspace",),
+                    # None, because it takes no path. Declaring the workspace here would be a
+                    # containment claim the guard never checks, and the registry now refuses it.
+                    allowed_roots=(),
                     handler=handler,
                 ),
             )
