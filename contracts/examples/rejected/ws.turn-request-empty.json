@@ -1,0 +1,10 @@
+{
+  "_why_rejected": "text is an empty string. An empty request is a mistake wearing the shape of a question - an accidental submit - and forwarding it to a model spends a turn producing an answer to nothing. It is refused where the mistake is, not later as a confusing caption.",
+  "v": 1,
+  "id": "c92b30f5-6a14-4e87-b053-2f7d81a6c94e",
+  "ts": "2026-08-12T18:23:58.204Z",
+  "type": "turn.request",
+  "payload": {
+    "text": ""
+  }
+}

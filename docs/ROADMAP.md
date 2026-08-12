@@ -312,10 +312,26 @@ one thing from the design that could not be taken at any price.
 - [x] 35/35 contract expectations, 381 brain, 155 ui; driven in Chromium against contract-shaped
       frames with no console errors
 
-**Not yet emitted: `listening`, `thinking`, `speaking`.** `server.py` is the only emitter and
-capability execution is the only lifecycle it hooks, so today the core only ever shows `idle` and
-`tool_running`. The contract and the UI both carry all five. Wiring the other three belongs with the
-planner and provider paths, not here.
+**2026-08-12, same day — `thinking` and `speaking` wired, `listening` deliberately not.** Adding
+`turn.request` (ui → brain) gave the planner its first caller outside tests: `BrainServices` now
+holds a `Planner`, and a request drives `thinking` while it runs, then either a proposal through the
+existing guard and approval gate or `speaking` carrying the model's own words.
+
+`propose()` used to return `Invocation | None` and threw the model's reason away. That reason *is*
+what the brain says when it declines to name a capability, so it now returns a `Proposal` carrying
+both. The old signature could not have been wired honestly — there was nothing to speak.
+
+- [x] `thinking` is emitted while the planner runs, and the call is off the event loop so telemetry
+      keeps flowing during it
+- [x] `speaking` carries the model's own reason, never a template the panel wrote
+- [x] A proposal returns the turn to `idle` and lets the approval gate speak for itself, rather than
+      narrating over a dialog the user is already reading
+
+**`listening` stays unwired, on purpose.** There is no microphone, no speech capture and no STT
+anywhere in this project, so nothing can report that state without inventing it — and inventing it
+is the exact failure this slice was built to avoid. It stays in the enum and the UI renders it,
+because narrowing an enum later is a breaking change. It starts being sent when voice input exists,
+which is M5/M6 work, and not before.
 
 ---
 

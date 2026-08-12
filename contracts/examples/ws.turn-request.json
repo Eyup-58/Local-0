@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "id": "a17c4e62-5b09-4d38-8f21-93b6c05de74a",
+  "ts": "2026-08-12T18:23:58.204Z",
+  "type": "turn.request",
+  "payload": {
+    "text": "How many notes are in the vault?"
+  }
+}

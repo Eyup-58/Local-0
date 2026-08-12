@@ -359,6 +359,14 @@ planner, and it is not derived from anything the model says.
 `untrusted_content` invocations may never perform `write` or `destructive` operations automatically.
 They surface for approval with the untrusted treatment from §5, or they are denied.
 
+**`turn.request` is where `user_direct` is stamped.** It is the only message that reaches the
+planner, and a frame arriving on the UI socket is what "the human typed it" means here — the brain
+assigns the origin at that point and never reads it back from the model's reply. The corollary is
+the rule that matters: nothing fetched, retrieved or summarised may be re-sent as a `turn.request`.
+Doing so would launder untrusted content into the trusted path in a single line that would look
+entirely reasonable in review, which is the same shape of mistake §2 warns about for the reader's
+registry.
+
 This is the second line, not the first. The first is §2: untrusted content should never have
 reached the planner at all. `origin` exists because defence in depth means assuming §2 has a hole
 somewhere and making that hole non-fatal.

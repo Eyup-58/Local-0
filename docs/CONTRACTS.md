@@ -295,6 +295,27 @@ Neither message is in `ClientMessage`: a tab that could send `turn.state` could 
 liked onto the core, and one that could send `tool.log` could write lines into the record of what
 ran. `brain/tests/test_turn_state.py` holds that line.
 
+**`listening` has no emitter and that is deliberate.** There is no microphone, no speech capture and
+no STT anywhere in this project, so nothing can report that state without inventing it. It stays in
+the enum and the UI renders it, because the alternative — narrowing an enum later — is breaking. It
+starts being sent when voice input exists, and not before.
+
+### `turn.request` — ui → brain
+
+Carries `text`, the user's own words. Non-empty; `rejected/ws.turn-request-empty.json` holds that,
+because an empty request is an accidental submit wearing the shape of a question and forwarding it
+spends a turn answering nothing.
+
+**This is the trusted half of `SECURITY.md` §2 and the only message that reaches the planner.** The
+planner may see what the user typed and nothing else — not a fetched page, not a file's contents,
+not any of those summarised first. A frame on this socket *is* the definition of "the user typed
+it", which is why `origin: user_direct` is stamped by the brain at the point the request enters and
+is never read back from anything the model says about itself (§6).
+
+It follows that nothing retrieved, fetched or paraphrased may be re-sent as a `turn.request`. That
+would launder untrusted content into the trusted path, and it is the one way this message can be
+misused.
+
 ---
 
 ## 5. Versioning
@@ -383,6 +404,19 @@ content the brain fetched. Like `credential.set`, the rule that matters is a han
 cannot express — display as text, never route to the planner — so it is stated here, in
 `SECURITY.md` §9, and in the schema's own description.
 
+**2026-08-12 — `turn.request` (ui → brain)**, closing the loop: until it existed the planner had no
+caller outside tests, and `turn.state` could only ever report `idle` and `tool_running` because
+capability execution was the only lifecycle the brain hooked. With it, a request drives
+`thinking` → a proposal or a spoken answer.
+
+Additive, `v` stays 1, `ipc.schema.json` untouched a fifth time.
+
+Unlike the other two, this one **is** in `ClientMessage` — it has to be; it is the UI's only way to
+ask for anything. That makes it the one inbound message whose payload reaches a language model, and
+the reason its description carries the §2 rule rather than leaving it implied. The UI still holds no
+authority: it sends prose, not an invocation, and what comes back goes through the same guard and
+approval gate as everything else.
+
 ---
 
 ## 6. Change procedure
@@ -431,6 +465,7 @@ from an assertion into a test:
 | `ws.memory-reindex-with-a-path.json` | The UI cannot choose a directory for the brain to walk and index |
 | `ws.turn-state-empty-caption.json` | Silence is spelled `null`; an empty caption cannot become a blank line indistinguishable from one that failed to arrive |
 | `ws.tool-log-unknown-status.json` | An unreadable status fails rather than rounding to the nearest, which would paint a failed call green |
+| `ws.turn-request-empty.json` | An accidental empty submit cannot spend a turn asking a model nothing |
 
 One valid example is worth naming for the same reason: `ws.approval-request-untrusted.json` is a
 **valid** message whose `content` argument carries `<img src=x onerror=alert(1)>` and an instruction
@@ -443,7 +478,7 @@ message definition matching the `type` field before validating — otherwise the
 collapses every failure into "not valid under any of the given schemas", which cannot distinguish a
 message rejected for the intended reason from one rejected by accident.
 
-Current state, verified 2026-08-12: **35/35 expectations hold** (23 valid, 12 rejected).
+Current state, verified 2026-08-12: **37/37 expectations hold** (24 valid, 13 rejected).
 
 ---
 

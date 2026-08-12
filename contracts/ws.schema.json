@@ -558,6 +558,32 @@
       "additionalProperties": false
     },
 
+    "turnRequestMessage": {
+      "description": "ui -> brain. Something the user typed, on its way to the planner. This is the trusted half of docs/SECURITY.md section 2: the planner may see the user's own request and nothing else, and a frame arriving on this socket is the definition of that. The brain stamps origin=user_direct here, at the point the request enters - it is never taken from anything the model says about itself. Nothing fetched, retrieved or summarised may be sent as one of these.",
+      "type": "object",
+      "properties": {
+        "v": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "$ref": "#/$defs/messageId" },
+        "ts": { "$ref": "#/$defs/timestamp" },
+        "type": { "const": "turn.request" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "description": "Non-empty. An empty request is a mistake wearing the shape of a question, and sending it to a model produces an answer to nothing.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          },
+          "required": ["text"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["v", "id", "ts", "type", "payload"],
+      "additionalProperties": false
+    },
+
     "toolLogMessage": {
       "description": "brain -> ui. One line of the tool log, appended as it happens. One message per event rather than a replayed array: a UI that reconnects has missed what it missed, and pretending otherwise by re-sending history would let it draw a log it never actually observed.",
       "type": "object",
@@ -614,6 +640,7 @@
     { "$ref": "#/$defs/memoryStatusMessage" },
     { "$ref": "#/$defs/memoryReindexMessage" },
     { "$ref": "#/$defs/turnStateMessage" },
-    { "$ref": "#/$defs/toolLogMessage" }
+    { "$ref": "#/$defs/toolLogMessage" },
+    { "$ref": "#/$defs/turnRequestMessage" }
   ]
 }
