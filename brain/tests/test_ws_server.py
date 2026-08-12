@@ -128,6 +128,22 @@ def handshake(socket) -> None:
     assert socket.receive_json()["type"] == "turn.state"
 
 
+def test_a_corrupt_memory_index_does_not_take_the_connection_down(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The handshake calls ``status()``, so a broken cache used to cost the whole socket.
+
+    Memory is one feature. Telemetry and approval do not depend on it, and the frame that reports
+    the turn state is sent *after* the memory frame - so an exception here meant the tab never
+    finished connecting and reconnected into the same failure. The index is created lazily, so
+    writing the file after the app is built is what a corrupt cache from a previous run looks like.
+    """
+    (tmp_path / "memory.sqlite").write_bytes(b"this is not a sqlite database" * 40)
+
+    with client, client.websocket_connect("/ws") as socket:
+        handshake(socket)
+
+
 async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -> None:
     """An operation the user approved and which then failed is exactly what this product must not be
     silent about.

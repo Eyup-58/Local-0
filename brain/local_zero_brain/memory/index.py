@@ -34,6 +34,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 
 from local_zero_brain.llm.provider import Provider
 from local_zero_brain.memory.chunks import TrustedChunk, UntrustedChunk
@@ -117,6 +118,8 @@ DROP TABLE IF EXISTS chunks;
 DROP TABLE IF EXISTS notes;
 """
 
+_T = TypeVar("_T")
+
 
 def _noop(_: str) -> None:
     return None
@@ -156,6 +159,7 @@ class MemoryIndex:
         "_embeddings_available",
         "_embedding_failure_logged",
         "_schema_ready",
+        "_unusable",
     )
 
     def __init__(
@@ -178,6 +182,9 @@ class MemoryIndex:
         #: imported the module - including a test run that never touches memory. Same rule
         #: trust.py follows: asking is not deciding.
         self._schema_ready = False
+        #: Set only when a corrupt cache could not be discarded and rebuilt either. Memory then
+        #: answers empty for the rest of the session; nothing else in the product depends on it.
+        self._unusable = False
 
     @staticmethod
     def default_path() -> Path:
@@ -210,10 +217,10 @@ class MemoryIndex:
         if not root.is_dir():
             return ReindexReport(indexed=0, skipped=0, removed=0)
 
-        indexed = skipped = 0
-        seen: set[str] = set()
+        def scan(connection: sqlite3.Connection) -> ReindexReport:
+            indexed = skipped = 0
+            seen: set[str] = set()
 
-        with self._connect() as connection:
             known = {row[0]: (row[1], row[2]) for row in connection.execute("SELECT path, mtime, size FROM notes")}
 
             for note in iter_notes(root):
@@ -235,7 +242,9 @@ class MemoryIndex:
 
             self._apply_supersedes(connection)
 
-        return ReindexReport(indexed=indexed, skipped=skipped, removed=removed)
+            return ReindexReport(indexed=indexed, skipped=skipped, removed=removed)
+
+        return self._run(scan, ReindexReport(indexed=0, skipped=0, removed=0))
 
     def _apply_supersedes(self, connection: sqlite3.Connection) -> None:
         """Retires the notes that other notes have replaced.
@@ -335,20 +344,33 @@ class MemoryIndex:
         ]
 
     def status(self) -> IndexStatus:
-        with self._connect() as connection:
-            notes = connection.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-            chunks = connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            embedded = connection.execute(
-                "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
-            ).fetchone()[0]
-            last = connection.execute("SELECT MAX(indexed_at) FROM notes").fetchone()[0]
+        """What the index holds.
 
-        return IndexStatus(
-            notes=notes,
-            chunks=chunks,
-            embedded_chunks=embedded,
-            last_indexed_at=last,
-            embeddings_available=self._embeddings_available,
+        Called during the WebSocket handshake, which is why it answers rather than raises when the
+        file is broken: an empty count is the truth about an unreadable cache, and it is the only
+        answer that leaves telemetry and approval - neither of which uses memory - still connecting.
+        """
+
+        def counts(connection: sqlite3.Connection) -> IndexStatus:
+            return IndexStatus(
+                notes=connection.execute("SELECT COUNT(*) FROM notes").fetchone()[0],
+                chunks=connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0],
+                embedded_chunks=connection.execute(
+                    "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
+                ).fetchone()[0],
+                last_indexed_at=connection.execute("SELECT MAX(indexed_at) FROM notes").fetchone()[0],
+                embeddings_available=self._embeddings_available,
+            )
+
+        return self._run(
+            counts,
+            IndexStatus(
+                notes=0,
+                chunks=0,
+                embedded_chunks=0,
+                last_indexed_at=None,
+                embeddings_available=self._embeddings_available,
+            ),
         )
 
     def conflict_candidates(self, note_path: str) -> list[str]:
@@ -364,7 +386,7 @@ class MemoryIndex:
         """
         retired = tuple(sorted(RETIRED_STATUSES))
 
-        with self._connect() as connection:
+        def candidates(connection: sqlite3.Connection) -> list[str]:
             row = connection.execute(
                 "SELECT note_type, trusted FROM notes WHERE path = ? AND superseded = 0 "
                 f"AND status NOT IN ({', '.join('?' * len(retired))})",
@@ -389,6 +411,8 @@ class MemoryIndex:
                 for (path,) in others
                 if len(mine & _significant_tokens(self._text_of(connection, path))) >= MIN_SHARED_TOKENS
             ]
+
+        return self._run(candidates, [])
 
     def _text_of(self, connection: sqlite3.Connection, note_path: str) -> str:
         rows = connection.execute("SELECT text FROM chunks WHERE path = ?", (note_path,)).fetchall()
@@ -430,8 +454,8 @@ class MemoryIndex:
 
         pool = max(limit, CANDIDATE_POOL) if self._embeddings_available else limit
 
-        with self._connect() as connection:
-            rows = connection.execute(
+        def matches(connection: sqlite3.Connection) -> list[tuple]:
+            return connection.execute(
                 "SELECT c.path, c.heading, c.text, c.written_at, c.embedding "
                 "FROM chunks_fts f JOIN chunks c ON c.id = f.rowid JOIN notes n ON n.path = c.path "
                 # A retired memory stays in the vault and stays out of recall: asking about the
@@ -442,7 +466,7 @@ class MemoryIndex:
                 (expression, trusted, *sorted(RETIRED_STATUSES), pool),
             ).fetchall()
 
-        return rows[:pool]
+        return self._run(matches, [])[:pool]
 
     def _vector_rows(self, query: str, *, trusted: int, limit: int) -> list[tuple]:
         """The chunks closest in meaning, whatever words they used."""
@@ -453,14 +477,16 @@ class MemoryIndex:
         target = _to_floats(vectors[0])
         retired = tuple(sorted(RETIRED_STATUSES))
 
-        with self._connect() as connection:
-            rows = connection.execute(
+        def embedded(connection: sqlite3.Connection) -> list[tuple]:
+            return connection.execute(
                 "SELECT c.path, c.heading, c.text, c.written_at, c.embedding "
                 "FROM chunks c JOIN notes n ON n.path = c.path "
                 "WHERE c.embedding IS NOT NULL AND n.trusted = ? AND n.superseded = 0 "
                 f"AND n.status NOT IN ({', '.join('?' * len(retired))})",
                 (trusted, *retired),
             ).fetchall()
+
+        rows = self._run(embedded, [])
 
         near = [(row, _cosine(target, _to_floats(row[4]))) for row in rows]
         near = [(row, score) for row, score in near if score >= VECTOR_FLOOR]
@@ -492,25 +518,111 @@ class MemoryIndex:
         self._embeddings_available = True
         return [array("f", vector).tobytes() for vector in vectors]
 
-    def _connect(self) -> sqlite3.Connection:
+    def _run(self, work: Callable[[sqlite3.Connection], _T], default: _T) -> _T:
+        """Runs ``work`` against the index, degrading to ``default`` instead of raising.
+
+        Every read and write in this class goes through here, which is the point: the caller that
+        crashed the WebSocket handshake was ``status()``, and guarding that one would have left the
+        same failure waiting behind ``search_trusted`` and ``reindex``.
+
+        The two failure shapes are answered differently. A file whose header will not open is
+        handled by ``_open``, which discards it and rebuilds - the user loses nothing, because the
+        vault is the source of truth. Corruption that only surfaces deeper in, once pages are being
+        read, cannot be answered mid-transaction: the file is discarded here so the *next* call
+        rebuilds it, and this call returns the empty answer rather than a wrong one.
+        """
+        connection = self._open()
+        if connection is None:
+            return default
+
+        try:
+            with connection:
+                return work(connection)
+        except sqlite3.DatabaseError as error:
+            connection.close()
+            # Closed before discarding, not merely in the `finally` below. Windows refuses to unlink
+            # a file that is still open, so discarding from under a live connection turns every
+            # mid-flight corruption into a permanent memory-off - the recovery would be unreachable
+            # on the one platform this product runs on. `close` is idempotent, so the `finally`
+            # calling it again costs nothing.
+            self._discard(f"the memory index became unreadable while in use ({error})")
+            return default
+        finally:
+            connection.close()
+
+    def _open(self) -> sqlite3.Connection | None:
+        """A connection with the schema in place, or None when the file cannot be made usable.
+
+        The recovery is the one this file already applies to a stale schema, one step harder. A
+        cache holding nothing the vault does not hold is not worth migration code, and it is not
+        worth repair code either: delete it and rescan.
+        """
+        if self._unusable:
+            return None
+
+        try:
+            return self._prepare()
+        except sqlite3.DatabaseError as error:
+            self._discard(f"the memory index at {self._path} is unreadable ({error})")
+
+        if self._unusable:
+            return None
+
+        try:
+            return self._prepare()
+        except sqlite3.DatabaseError as error:
+            # A fresh file that still will not open is not a corrupt cache; something is wrong with
+            # the location itself. Memory goes off and the rest of the product carries on.
+            self._give_up(f"the memory index could not be rebuilt ({error})")
+            return None
+
+    def _prepare(self) -> sqlite3.Connection:
+        """Opens the file, bringing the schema up to date on first use."""
         if not self._schema_ready:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(self._path)
-            with connection:
-                version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version and version != SCHEMA_VERSION:
-                    # A cache from an older shape. Everything in it came from the vault, so the
-                    # cheapest correct answer is to throw it away and rescan.
-                    self._log(f"memory index schema {version} is stale; rebuilding from the vault")
-                    connection.executescript(_DROP)
+            try:
+                with connection:
+                    version = connection.execute("PRAGMA user_version").fetchone()[0]
+                    if version and version != SCHEMA_VERSION:
+                        # A cache from an older shape. Everything in it came from the vault, so the
+                        # cheapest correct answer is to throw it away and rescan.
+                        self._log(f"memory index schema {version} is stale; rebuilding from the vault")
+                        connection.executescript(_DROP)
 
-                connection.executescript(_SCHEMA)
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    connection.executescript(_SCHEMA)
+                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            finally:
+                connection.close()
 
-            connection.close()
             self._schema_ready = True
 
         return sqlite3.connect(self._path)
+
+    def _discard(self, reason: str) -> None:
+        """Deletes the cache so the next call rebuilds it from the vault.
+
+        Reported rather than done quietly. Deleting a file the user can see in their own profile is
+        not a thing to leave out of the log, even one this product created and can recreate.
+        """
+        self._log(f"{reason}; discarding it and rebuilding from the vault")
+
+        try:
+            self._path.unlink(missing_ok=True)
+        except OSError as error:
+            # Held open by a backup agent, or on a volume that has gone read-only. Rebuilding is not
+            # available either, so there is nothing left to do but keep everything else running.
+            self._give_up(f"the memory index could not be discarded ({error})")
+            return
+
+        self._schema_ready = False
+
+    def _give_up(self, reason: str) -> None:
+        """Memory off, everything else up. Logged once - one broken file is one fact."""
+        if not self._unusable:
+            self._log(f"{reason}; memory is off for this session and the vault is untouched")
+
+        self._unusable = True
 
 
 def _match_expression(query: str) -> str | None:

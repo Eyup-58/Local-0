@@ -381,6 +381,144 @@ class TestEmbeddings:
         assert len([line for line in logged if "embed" in line.lower()]) == 1
 
 
+class TestACorruptIndex:
+    """A cache that will not open is a cache to throw away, not a reason to take memory down.
+
+    This file is derived from the vault and holds nothing the vault does not - the same reasoning
+    that answers a stale schema by dropping the tables. So corruption gets the same answer, one step
+    harder: discard the file itself and rescan.
+
+    It is a gate criterion because the crash was not contained to memory. ``status()`` is called
+    during the WebSocket handshake, before the frame that reports the turn state, so a corrupt cache
+    took the whole connection down with it - telemetry and approval included, neither of which
+    depends on memory for anything.
+    """
+
+    @staticmethod
+    def corrupt(path: Path) -> None:
+        """A file that is not a database at all. Truncation, a bad sync, a half-written flush."""
+        path.write_bytes(b"this is not a sqlite database, not even the header" * 40)
+
+    def test_status_is_reported_rather_than_raised(self, tmp_path: Path, vault: Path) -> None:
+        """The handshake path, which is where this actually mattered."""
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+
+        status = MemoryIndex(path).status()
+
+        assert status.notes == 0
+        assert status.chunks == 0
+
+    def test_searching_returns_nothing_rather_than_raising(self, tmp_path: Path) -> None:
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+        index = MemoryIndex(path)
+
+        assert index.search_trusted("panels") == []
+        assert index.search_untrusted("panels") == []
+
+    def test_conflict_candidates_degrade_too(self, tmp_path: Path) -> None:
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+
+        assert MemoryIndex(path).conflict_candidates("Memory/preferences.md") == []
+
+    def test_the_file_is_discarded_and_rebuilt_from_the_vault(self, tmp_path: Path, vault: Path) -> None:
+        """Degrading is the floor, not the goal. The vault is still there, so memory comes back."""
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+        index = MemoryIndex(path)
+
+        report = index.reindex(vault)
+
+        assert report.indexed == 2
+        assert index.search_trusted("panels")
+
+    def test_the_discard_is_reported(self, tmp_path: Path, vault: Path) -> None:
+        """Silently deleting the user's file is not a thing to do quietly, even a derived one."""
+        logged: list[str] = []
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+
+        MemoryIndex(path, log=logged.append).reindex(vault)
+
+        assert [line for line in logged if "unreadable" in line]
+
+    def test_an_index_that_cannot_be_discarded_degrades_to_memory_off(
+        self, tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor underneath the recovery.
+
+        A corrupt file that will not delete - held open by a backup agent, on a read-only volume -
+        is the case where rebuilding is not available either. There is nothing left to do but keep
+        the rest of the product running.
+        """
+        logged: list[str] = []
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError("the file is held open by another process")
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        index = MemoryIndex(path, log=logged.append)
+
+        assert index.reindex(vault).indexed == 0
+        assert index.status().notes == 0
+        assert index.search_trusted("panels") == []
+        assert [line for line in logged if "memory is off" in line]
+
+    def test_the_failure_is_reported_once_rather_than_per_call(
+        self, tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same rule the embedding failure follows: one broken file is one fact."""
+        logged: list[str] = []
+        path = tmp_path / "memory.sqlite"
+        self.corrupt(path)
+        monkeypatch.setattr(Path, "unlink", lambda *_a, **_k: (_ for _ in ()).throw(PermissionError()))
+        index = MemoryIndex(path, log=logged.append)
+
+        index.status()
+        index.search_trusted("panels")
+        index.reindex(vault)
+
+        assert len([line for line in logged if "memory is off" in line]) == 1
+
+    def test_corruption_that_appears_after_the_file_was_opened_recovers_too(
+        self, tmp_path: Path, vault: Path
+    ) -> None:
+        """The header is checked once, on first use, so later damage surfaces mid-query instead.
+
+        No mocking needed to reach it: index a real vault, then overwrite the file. The schema is
+        already marked ready, so the next call opens without re-reading the header and the failure
+        arrives from the query itself - a different code path from every test above.
+
+        This caught a real bug in the recovery. Windows will not unlink a file that is still open,
+        so discarding before closing the connection turned this case into a permanent memory-off.
+        """
+        path = tmp_path / "memory.sqlite"
+        index = MemoryIndex(path)
+        index.reindex(vault)
+        assert index.status().notes == 2
+
+        self.corrupt(path)
+
+        assert index.search_trusted("panels") == []
+        assert index.reindex(vault).indexed == 2
+        assert index.search_trusted("panels")
+
+    def test_a_healthy_index_is_never_discarded(self, tmp_path: Path, vault: Path) -> None:
+        """The recovery must not be reachable by an index that is merely empty or merely new."""
+        logged: list[str] = []
+        index = MemoryIndex(tmp_path / "memory.sqlite", log=logged.append)
+
+        index.reindex(vault)
+        index.reindex(vault)
+
+        assert index.status().notes == 2
+        assert not [line for line in logged if "unreadable" in line]
+
+
 class TestEmbeddingsNeverLeaveTheMachine:
     """docs/SECURITY.md section 11: embeddings are local in **both** modes.
 
