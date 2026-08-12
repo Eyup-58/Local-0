@@ -24,6 +24,13 @@ internal sealed class SensorSweep : IDisposable
     private const string CpuGroup = "cpu";
     private const string MemoryGroup = "memory";
     private const string GpuGroup = "gpu";
+
+    /// <summary>
+    /// Its own fault group. ADLX failing must not mark the PDH-backed GPU fields as faulted -
+    /// they are a different source and go on working without it.
+    /// </summary>
+    private const string GpuTemperatureGroup = "gpu.temperature";
+
     private const string UptimeGroup = "uptime";
 
     private static readonly CpuReading UnreadableCpu = new(null, null, null, null);
@@ -32,6 +39,7 @@ internal sealed class SensorSweep : IDisposable
 
     private readonly CpuSensor? _cpuSensor;
     private readonly GpuSensor? _gpuSensor;
+    private readonly GpuTemperatureSensor? _gpuTemperatureSensor;
     private readonly FaultTracker _faults = new();
 
     /// <summary>
@@ -39,10 +47,14 @@ internal sealed class SensorSweep : IDisposable
     /// its fields stay null for the life of the process while every other group keeps working.
     /// Internal so tests can compose a sweep with a group deliberately missing.
     /// </summary>
-    internal SensorSweep(CpuSensor? cpuSensor, GpuSensor? gpuSensor)
+    internal SensorSweep(
+        CpuSensor? cpuSensor,
+        GpuSensor? gpuSensor,
+        GpuTemperatureSensor? gpuTemperatureSensor = null)
     {
         _cpuSensor = cpuSensor;
         _gpuSensor = gpuSensor;
+        _gpuTemperatureSensor = gpuTemperatureSensor;
     }
 
     /// <summary>
@@ -50,6 +62,16 @@ internal sealed class SensorSweep : IDisposable
     /// declaration so the UI is told up front whether GPU fields will ever carry a value.
     /// </summary>
     internal bool HasGraphicsAdapter => _gpuSensor is not null;
+
+    /// <summary>
+    /// True when ADLX opened and this machine's GPU reports a temperature.
+    ///
+    /// Separate from <see cref="HasGraphicsAdapter"/> because they fail independently: a machine
+    /// with no AMD driver still has working utilization and VRAM through PDH, and declaring the
+    /// temperature available on the strength of an adapter existing would promise a number that
+    /// never arrives.
+    /// </summary>
+    internal bool HasGpuTemperature => _gpuTemperatureSensor is not null;
 
     /// <summary>
     /// Opens every sensor group. A group that cannot be opened at all is left closed and its
@@ -62,8 +84,10 @@ internal sealed class SensorSweep : IDisposable
 
         CpuSensor? cpuSensor = TryOpen(CpuSensor.Create, CpuGroup, logWarning);
         GpuSensor? gpuSensor = TryOpen(GpuSensor.TryCreate, GpuGroup, logWarning);
+        GpuTemperatureSensor? gpuTemperatureSensor =
+            TryOpen(GpuTemperatureSensor.TryCreate, GpuTemperatureGroup, logWarning);
 
-        return new SensorSweep(cpuSensor, gpuSensor);
+        return new SensorSweep(cpuSensor, gpuSensor, gpuTemperatureSensor);
     }
 
     private static T? TryOpen<T>(Func<T?> open, string group, Action<string> logWarning)
@@ -92,6 +116,12 @@ internal sealed class SensorSweep : IDisposable
 
         GpuReading gpu = ReadGroup(GpuGroup, faults, UnreadableGpu, () =>
             _gpuSensor is null ? UnreadableGpu : _gpuSensor.Read());
+
+        // Read in its own group and merged in, so an ADLX failure costs the temperature and nothing
+        // else. Folding it into GpuSensor.Read would let one source take the other's fields down.
+        double? temperature = ReadGroup<double?>(GpuTemperatureGroup, faults, null, () =>
+            _gpuTemperatureSensor?.Read());
+        gpu = gpu with { TemperatureC = temperature };
 
         long? uptimeSeconds = ReadGroup<long?>(UptimeGroup, faults, null, () => UptimeSensor.Read());
 
@@ -134,5 +164,6 @@ internal sealed class SensorSweep : IDisposable
     {
         _cpuSensor?.Dispose();
         _gpuSensor?.Dispose();
+        _gpuTemperatureSensor?.Dispose();
     }
 }

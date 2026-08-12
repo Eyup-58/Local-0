@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO.Pipes;
 using System.Threading.Channels;
 using LocalZero.System.Diagnostics;
@@ -128,7 +128,7 @@ internal sealed class TelemetryPipeServer
     {
         try
         {
-            IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(_sweep.HasGraphicsAdapter);
+            IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(_sweep.HasGraphicsAdapter, _sweep.HasGpuTemperature);
             int pollIntervalMs = (int)_pollInterval.TotalMilliseconds;
             Enqueue(outbound, IpcJson.Serialize(_messages.CreateHello(sensors, pollIntervalMs)));
 

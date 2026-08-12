@@ -1,4 +1,4 @@
-using LocalZero.System.Sensors;
+﻿using LocalZero.System.Sensors;
 using LocalZero.System.Telemetry;
 using Xunit;
 
@@ -48,7 +48,7 @@ public sealed class SensorSweepTests
 
         Assert.False(sweep.HasGraphicsAdapter);
 
-        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(sweep.HasGraphicsAdapter);
+        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(sweep.HasGraphicsAdapter, sweep.HasGpuTemperature);
         SensorCapability utilization = sensors.Single(s => s.Field == "gpu.utilization_percent");
 
         Assert.False(utilization.Available);

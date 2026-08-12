@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Json.Schema;
 using LocalZero.System.Ipc;
 using LocalZero.System.Sensors;
@@ -32,7 +32,7 @@ public sealed class ContractComplianceTests
     public void hello_message_validates_against_the_ipc_schema()
     {
         MessageFactory factory = new(new FixedTimeProvider(FixedTimeProvider.DefaultInstant));
-        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: true);
+        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: true, hasGpuTemperature: true);
 
         string json = IpcJson.Serialize(factory.CreateHello(sensors, pollIntervalMs: 1000));
 
@@ -43,7 +43,7 @@ public sealed class ContractComplianceTests
     public void hello_message_validates_when_no_graphics_adapter_is_present()
     {
         MessageFactory factory = new(new FixedTimeProvider(FixedTimeProvider.DefaultInstant));
-        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: false);
+        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: false, hasGpuTemperature: false);
 
         string json = IpcJson.Serialize(factory.CreateHello(sensors, pollIntervalMs: 1000));
 

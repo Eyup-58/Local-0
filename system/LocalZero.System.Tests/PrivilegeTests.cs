@@ -1,4 +1,4 @@
-using LocalZero.System.Diagnostics;
+﻿using LocalZero.System.Diagnostics;
 using LocalZero.System.Ipc;
 using LocalZero.System.Sensors;
 using LocalZero.System.Telemetry;
@@ -23,7 +23,7 @@ public sealed class PrivilegeTests
     public void hello_always_declares_the_sidecar_unelevated()
     {
         MessageFactory factory = new(new FixedTimeProvider(FixedTimeProvider.DefaultInstant));
-        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: true);
+        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: true, hasGpuTemperature: true);
 
         HelloMessage hello = factory.CreateHello(sensors, pollIntervalMs: 1000);
 

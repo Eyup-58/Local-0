@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.RegularExpressions;
 using LocalZero.System.Ipc;
 using LocalZero.System.Sensors;
@@ -25,7 +25,7 @@ public sealed partial class MessageFactoryTests
         new(new FixedTimeProvider(FixedTimeProvider.DefaultInstant));
 
     private static HelloMessage CreateHello() =>
-        CreateFactory().CreateHello(SensorCatalog.Build(hasGraphicsAdapter: true), pollIntervalMs: 1000);
+        CreateFactory().CreateHello(SensorCatalog.Build(hasGraphicsAdapter: true, hasGpuTemperature: true), pollIntervalMs: 1000);
 
     [Fact]
     public void timestamps_are_rfc3339_utc_with_millisecond_precision()
@@ -48,7 +48,7 @@ public sealed partial class MessageFactoryTests
     public void message_ids_are_unique_per_message()
     {
         MessageFactory factory = CreateFactory();
-        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: true);
+        IReadOnlyList<SensorCapability> sensors = SensorCatalog.Build(hasGraphicsAdapter: true, hasGpuTemperature: true);
 
         string first = factory.CreateHello(sensors, 1000).Id;
         string second = factory.CreateHello(sensors, 1000).Id;

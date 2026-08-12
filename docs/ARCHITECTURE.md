@@ -60,9 +60,31 @@ unelevated, and on consumer desktop boards it typically exposes a single ACPI zo
 chipset rather than the CPU. It costs an elevation prompt to obtain a number that is wrong. Treat
 it as unavailable.
 
-**U1 — AMD ADLX is unvalidated.** ADLX is the only driverless route to GPU temperature, hotspot,
-fan RPM and board power. It exposes a C interface, which makes interop plausible — but plausible is
-not measured. Nothing in the roadmap may depend on it until the M5 spike passes.
+**U1 — AMD ADLX, resolved 2026-08-13. GPU temperature is real.** ADLX is the only driverless route
+to GPU temperature, hotspot, fan RPM and board power, and it was carried as unvalidated from M0
+because a C interface makes interop *plausible* rather than measured. The M5 spike measured it:
+`amdadlx64.dll` 1.5.0.124, on a Radeon RX 7800 XT, **unelevated throughout**.
+
+The C interface is COM-shaped without being COM — calls go through vtable slots by index, so a
+wrong index returns a plausible-looking double that is not a temperature, which is invariant 10's
+exact failure. The layout was therefore proved before any value was believed:
+
+| Check | Result |
+|---|---|
+| `IADLXSystem` slot 10 `TotalSystemRAM` | 65302 MB against the 63.8 GiB Windows reports |
+| Metrics `GPUVRAM` against PDH `Dedicated Usage` | **2942 MB against 2942 MB**, same second |
+| Metrics `GPUUsage` against PDH `GPU Engine` | 23.0 % against 22.0 % |
+| Temperature under changing load | 49 °C at 8 % → 51 °C at 23 %, hotspot above edge |
+
+The exact VRAM match is what settles it: a neighbouring slot landing on the right value proves the
+metrics object and its offsets, and therefore that the temperature slot is the temperature.
+
+Board power returned a non-zero result code — this card does not report it — and is rendered as a
+gap rather than a zero. Fan RPM read 0 at idle, which is a fan-stop, not a missing sensor.
+
+**What the spike did not establish:** `IADLXList` slot 3 returned 0 for a list whose element 0 was
+then fetched successfully, so it is not `Size`, or not with that signature. It is unused and stays
+unused until somebody measures what it is.
 
 ---
 
@@ -188,7 +210,9 @@ not patched around.**
 | GPU utilization per engine | PDH `GPU Engine` | No | **High — measured (M2)** |
 | VRAM dedicated usage | PDH `GPU Adapter Memory` | No | **High — measured (M2)** |
 | Process list, per-process CPU/RAM | Win32 process enumeration | No | High |
-| GPU temperature, fan RPM, board power | AMD ADLX | No | **Low — unvalidated (U1)** |
+| GPU temperature | AMD ADLX | No | **High — measured (M5)** |
+| GPU fan RPM | AMD ADLX | No | Medium — reads, but 0 at idle is a fan-stop, not a sensor |
+| GPU board power | AMD ADLX | No | **Unavailable — this card does not report it** |
 
 ### What is NOT available
 
@@ -211,8 +235,12 @@ is a missing sensor or a bug.
 
 ### Degraded fallback
 
-ADLX is the only uncertain row. If the M5 spike fails, GPU temperature is cut and the panel ships
-with load and VRAM. Nothing is reached for to fill the gap.
+ADLX was the only uncertain row and the M5 spike settled it, so GPU temperature ships. The
+fallback still stands and is now the ordinary path for everyone else: ADLX arrives with the AMD
+display driver, so a machine with another vendor's card declares `gpu.temperature_c` unavailable
+and keeps load and VRAM, which come from PDH and need no driver. The two sources fail
+independently by construction — a separate sensor, a separate fault group — so a missing ADLX
+costs one field rather than three. Nothing is reached for to fill the gap.
 
 ---
 
@@ -344,7 +372,9 @@ Carried into M1 rather than guessed at now:
 - **LLM provider set** — which of the intended providers are local (Ollama, already on this machine)
   and which are network calls. This determines whether Local Zero makes outbound connections at all,
   which is a `SECURITY.md` question, not a convenience one. Must be answered before M4.
-- **ADLX viability (U1)** — timeboxed spike in M5. Nothing depends on it until it passes.
+- ~~**ADLX viability (U1)**~~ — **closed 2026-08-13.** The spike passed in three stages and GPU
+  temperature is a measured field; see section 3. Board power is confirmed unavailable on this
+  card and is rendered as a gap.
 - **WebView2 / browser idle GPU cost (U2)** — Project 0 flagged that a visible webview composites
   regardless of what the page draws. Less acute here since the UI is an ordinary browser tab, but
   the idle budget in `PERFORMANCE.md` is provisional until measured against a blank page.

@@ -15,7 +15,10 @@ internal enum SensorSource
     /// <summary>WMI. Not used by any field today.</summary>
     Wmi,
 
-    /// <summary>AMD ADLX. Not integrated; gated behind the M5 spike.</summary>
+    /// <summary>
+    /// AMD ADLX. Carries gpu.temperature_c on a machine with an AMD display driver; the field is
+    /// declared unavailable everywhere else. Validated in M5 - see GpuTemperatureSensor.
+    /// </summary>
     Adlx,
 
     /// <summary>No source exists on this machine. Required when the field is unavailable.</summary>

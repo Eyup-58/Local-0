@@ -13,10 +13,16 @@ namespace LocalZero.System.Sensors;
 internal static class SensorCatalog
 {
     internal const string CpuTemperatureReason = "requires kernel driver - not installed";
-    internal const string GpuTemperatureReason = "AMD ADLX not integrated - see ROADMAP M5";
+
+    /// <summary>
+    /// Why the GPU temperature is missing when it is. ADLX ships with the AMD display driver, so
+    /// this is what a machine with another vendor's card - or no AMD driver - is told.
+    /// </summary>
+    internal const string GpuTemperatureReason = "AMD ADLX unavailable - needs an AMD display driver";
+
     internal const string NoGraphicsAdapterReason = "no hardware graphics adapter reported by DXGI";
 
-    internal static IReadOnlyList<SensorCapability> Build(bool hasGraphicsAdapter)
+    internal static IReadOnlyList<SensorCapability> Build(bool hasGraphicsAdapter, bool hasGpuTemperature)
     {
         List<SensorCapability> capabilities =
         [
@@ -37,13 +43,14 @@ internal static class SensorCatalog
             SensorCapability.Readable("memory.commit_limit_bytes", SensorSource.Win32Api),
         ];
 
-        capabilities.AddRange(BuildGpuCapabilities(hasGraphicsAdapter));
+        capabilities.AddRange(BuildGpuCapabilities(hasGraphicsAdapter, hasGpuTemperature));
         capabilities.Add(SensorCapability.Readable("uptime_seconds", SensorSource.Win32Api));
 
         return capabilities;
     }
 
-    private static IEnumerable<SensorCapability> BuildGpuCapabilities(bool hasGraphicsAdapter)
+    private static IEnumerable<SensorCapability> BuildGpuCapabilities(
+        bool hasGraphicsAdapter, bool hasGpuTemperature)
     {
         if (!hasGraphicsAdapter)
         {
@@ -58,8 +65,12 @@ internal static class SensorCatalog
             yield return SensorCapability.Readable("gpu.vram_total_bytes", SensorSource.Win32Api);
         }
 
-        // Unavailable whether or not an adapter exists: the route to it is ADLX, and ADLX is an
-        // unvalidated spike. Nothing may depend on it until M5.
-        yield return SensorCapability.Unavailable("gpu.temperature_c", GpuTemperatureReason);
+        // Declared from whether ADLX actually opened, not from whether an adapter exists. The two
+        // fail independently - a machine with a working PDH adapter and another vendor's driver has
+        // utilization and no temperature - and declaring it available on the strength of the
+        // adapter would promise a number that never arrives.
+        yield return hasGpuTemperature
+            ? SensorCapability.Readable("gpu.temperature_c", SensorSource.Adlx)
+            : SensorCapability.Unavailable("gpu.temperature_c", GpuTemperatureReason);
     }
 }
