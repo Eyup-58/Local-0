@@ -15,26 +15,49 @@ those, not against today's guesses.
 
 **No implementation code.** Output is design decisions and machine-checkable contracts.
 
-Exit criteria:
+Exit criteria, with the evidence for each. **Gated retroactively on 2026-08-13** — M0 shipped before
+`/gate` was in the habit, and M1–M3 were ticked while this section was not. Every criterion below was
+re-checked against the tree as it stands, not from memory.
 
-- [ ] `docs/ARCHITECTURE.md`, `SECURITY.md`, `CONTRACTS.md`, `PERFORMANCE.md`, `ROADMAP.md` all exist
-- [ ] `contracts/ipc.schema.json` and `contracts/ws.schema.json` are valid JSON Schema draft 2020-12
-- [ ] Every example payload validates, and every `rejected/` example fails **for its intended
+- [x] `docs/ARCHITECTURE.md`, `SECURITY.md`, `CONTRACTS.md`, `PERFORMANCE.md`, `ROADMAP.md` all exist
+      — all five present in `docs/`
+- [x] `contracts/ipc.schema.json` and `contracts/ws.schema.json` are valid JSON Schema draft 2020-12
+      — both pass `Draft202012Validator.check_schema`, and both declare
+      `$schema: .../draft/2020-12/schema` rather than merely being accepted by a lenient validator
+- [x] Every example payload validates, and every `rejected/` example fails **for its intended
       reason** (the validator prints the offending field, not a generic oneOf failure):
-      `uv run --with jsonschema python contracts/validate_examples.py` → all expectations hold
-- [ ] `SECURITY.md` contains a written threat model for the ingest → memory → planner → executor
-      chain, naming where the chain structurally breaks
-- [ ] Capability registry fields and the guard chain order are defined, with what each step blocks
-- [ ] The privilege model is documented: every process `asInvoker`, no elevated helper, with the
-      measurement that makes elevation pointless
-- [ ] Performance budgets are written as numbers, each naming the script that will produce it, and
-      each labelled provisional until measured
-- [ ] `.gitignore` covers secrets, `logs/`, `audit.jsonl`, and build output — **before** the first
-      commit
-- [ ] `.claude/` scaffolding present: `settings.json`, three subagents, three commands, and the
-      contract guard hook the settings file references
-- [ ] `CLAUDE.md` carries the red lines plus the two machine-specific invariants (L1 localized
-      counters, ring-0 ban)
+      `uv run --with jsonschema python contracts/validate_examples.py` → all expectations hold —
+      `37/37 expectations held`, grown from 14/14 at M2 as the contract took on the approval,
+      provider and turn messages
+- [x] `SECURITY.md` contains a written threat model for the ingest → memory → planner → executor
+      chain, naming where the chain structurally breaks — §1 names the attacker as anyone
+      controlling text the system ingests, §2 is titled "The structural break" and marks
+      `READER ← THE BREAK POINT` in the diagram, and §2 states it in one sentence: the component
+      that can invoke capabilities never receives untrusted text
+- [x] Capability registry fields and the guard chain order are defined, with what each step blocks —
+      `SECURITY.md` §4: "A capability does not exist unless it is registered with all five fields",
+      then "The guard chain — order is invariant" with what each of the five steps refuses
+- [x] The privilege model is documented: every process `asInvoker`, no elevated helper, with the
+      measurement that makes elevation pointless — `ARCHITECTURE.md` §2: GPU counters return live
+      data unelevated, and CPU temperature is unavailable at any privilege level on this board, so
+      elevation buys a number that is wrong. All three processes marked `asInvoker` in the diagram
+- [x] Performance budgets are written as numbers, each naming the script that will produce it, and
+      each labelled provisional until measured — `PERFORMANCE.md` §3, P1–P5, each naming its
+      `bench/` script. The provisional labels are gone because M1 measured all five and revised
+      three; §5 holds the dated results, which is the state this criterion was aiming at
+- [x] `.gitignore` covers secrets, `logs/`, `audit.jsonl`, and build output — **before** the first
+      commit — checked against the first commit itself rather than today's file
+      (`git show <first>:.gitignore`): `.env`, `.env.*`, `!.env.example`, `/logs`, `audit.jsonl`,
+      `*.log`, `.venv/`, `node_modules/` were all present in it
+- [x] `.claude/` scaffolding present: `settings.json`, three subagents, three commands, and the
+      contract guard hook the settings file references — `agents/` holds `brain-python`,
+      `system-csharp`, `ui-typescript`; `commands/` holds `bench`, `gate`, `threat-check`; and
+      `hooks/guard_contracts.py` exists, which is the path `settings.json` names in its
+      `PreToolUse` matcher
+- [x] `CLAUDE.md` carries the red lines plus the two machine-specific invariants (L1 localized
+      counters, ring-0 ban) — 14 numbered red lines, including 9 (no localized performance
+      counters, `PdhAddEnglishCounterW` required) and 10 (no kernel drivers, unavailable telemetry
+      labelled rather than estimated)
 
 **Not gated on:** `dotnet build`, `pytest`, `npm run build`. There is no code to build.
 
@@ -228,24 +251,57 @@ Built in three slices, so the injection surface opens one piece at a time:
 | **M4b** | The planner/reader split, the two chunk types, the injection test set |
 | **M4c** | Provider selection and key entry in the UI — three additive WebSocket messages |
 
-Exit criteria:
+Exit criteria, with the evidence for each. **Gated on 2026-08-13**, after M4.5 had already been
+built on top of it — the rule at the head of this file was not followed here, and the gate was run
+late rather than skipped. `brain` suite: **454 passed**; the M4 layer's own files
+(`test_llm`, `test_egress`, `test_credentials`, `test_provider_ws`) account for **57**.
 
-- [ ] Providers work through a single interface; keys come from the environment or Credential
-      Manager, never from source
-- [ ] **No non-loopback egress in Local mode**, enforced process-wide against any library rather
-      than by convention, and every departure in Cloud mode recorded in the audit log
-- [ ] Embeddings are computed locally in **both** modes — indexing the vault through a network
-      provider would send its contents off the machine one chunk at a time
-- [ ] A missing key is a startup failure with a clear message, not a runtime surprise
-- [ ] No key appears in any log, error message, test fixture, or commit — a `Secret` wrapper makes
-      accidental interpolation print `[redacted]`
-- [ ] Malformed structured output is handled gracefully with a bounded retry — no infinite loop
-- [ ] **The injection test set passes:** instructions embedded in file contents, in a stored memory
-      record, and in a telemetry string field do not become capability invocations
-- [ ] The Reader path has an empty capability registry, asserted by a test
-- [ ] Trusted and untrusted retrieval have separate return types with no conversion between them,
-      asserted by a test
-- [ ] `/threat-check` reports clean
+- [x] Providers work through a single interface; keys come from the environment or Credential
+      Manager, never from source — `Provider` is a `Protocol`, and neither planner nor reader knows
+      which implementation it holds. The key is read only through `win32cred.CredRead`, stored
+      `CRED_PERSIST_LOCAL_MACHINE` so it does not roam. A pattern scan for Google and OpenAI key
+      shapes across `brain/`, `ui/src`, `system/` and `docs/` returns nothing
+- [x] **No non-loopback egress in Local mode**, enforced process-wide against any library rather
+      than by convention, and every departure in Cloud mode recorded in the audit log — 19 tests in
+      `test_egress.py`. The guard patches the socket itself, so `test_the_guard_is_not_routed_around_by_a_higher_level_helper`
+      and `test_connect_ex_is_guarded_too` hold for any library; datagrams are refused with and
+      without flags; IPv6 loopback and `localhost` by name both resolve as loopback and a hostname
+      that will not resolve is refused. `test_cloud_mode_records_every_departure` covers the audit
+      half, and `test_loopback_traffic_is_not_recorded` keeps the log meaningful
+- [x] Embeddings are computed locally in **both** modes — indexing the vault through a network
+      provider would send its contents off the machine one chunk at a time —
+      `TestEmbeddingsNeverLeaveTheMachine`, run in Cloud mode with egress permitted; every address
+      reached was `127.0.0.1`. `GeminiProvider.embed` raises rather than exporting the vault, and
+      `create_app` wires `OllamaProvider()` as the embedding provider whatever the selected mode
+- [x] A missing key is a startup failure with a clear message, not a runtime surprise —
+      `MissingKey` is its own error type and `test_cloud_mode_without_a_key_fails_at_construction`
+      proves it fires when the provider is built, not deep in a call. Local mode needs no key, and
+      the UI is told `has_key` during the handshake, so the state is visible before Cloud is chosen
+- [x] No key appears in any log, error message, test fixture, or commit — a `Secret` wrapper makes
+      accidental interpolation print `[redacted]` — `repr`, `str`, f-string, `%` interpolation, a
+      log record, and containment in a list are each asserted separately, and
+      `test_a_secret_is_not_json_serializable` closes the most likely leak of all. `reveal()` is
+      called in exactly two places: writing to Credential Manager and setting the request header.
+      The commit half is M1's `.githooks/pre-commit`, with `core.hooksPath` set to `.githooks`
+- [x] Malformed structured output is handled gracefully with a bounded retry — no infinite loop —
+      `MAX_STRUCTURED_ATTEMPTS = 3`, named rather than inlined so the test asserting termination
+      uses the same number the loop does. A retry that succeeds returns the parsed object, and a
+      fenced code block is still read as JSON rather than counting as malformed
+- [x] **The injection test set passes:** instructions embedded in file contents, in a stored memory
+      record, and in a telemetry string field do not become capability invocations —
+      `TestTheThreeIngestPaths`, one case each, all carrying the same `delete_file` on
+      `config\SAM` payload into a provider that obeys any instruction it is shown
+- [x] The Reader path has an empty capability registry, asserted by a test —
+      `test_its_registry_is_empty`, and the stronger `test_a_registry_cannot_be_handed_to_it`:
+      there is no parameter to fill, so it is not "empty by convention"
+- [x] Trusted and untrusted retrieval have separate return types with no conversion between them,
+      asserted by a test — `TestTheTwoTypes`. The field names differ deliberately, so the
+      conversion somebody writes in a hurry raises rather than succeeding quietly
+- [x] `/threat-check` reports clean — run 2026-08-13 over the M4 surface, all ten items. The two
+      worth naming: the Gemini endpoint is a pinned constant with the model from a constant, never
+      assembled from input, and a search for `shell=True`, `subprocess`, `os.system`, `eval(` and
+      `exec(` across the LLM and network layers returns zero. Items 5, 9 and 10 are unchanged by
+      M4, which touches neither `system/` nor the telemetry path
 
 ---
 
