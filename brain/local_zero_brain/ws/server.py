@@ -18,10 +18,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from local_zero_brain.audit import AuditLog
-from local_zero_brain.capabilities.guard import Denied, Guard, Invocation, Pending, Verdict
+from local_zero_brain.capabilities.guard import Allowed, Denied, Guard, Invocation, Pending, Verdict
 from local_zero_brain.capabilities.handlers import build_registry
 from local_zero_brain.capabilities.paths import workspace_root
-from local_zero_brain.capabilities.registry import CapabilityRegistry
+from local_zero_brain.capabilities.registry import Capability, CapabilityRegistry
 from local_zero_brain.contracts.common import CONTRACT_VERSION
 from local_zero_brain.contracts.ws import (
     CLIENT_HELLO_ADAPTER,
@@ -474,7 +474,11 @@ async def _apply_decision(services: BrainServices, message: ApprovalDecision) ->
         return
 
     if approved:
-        await _execute(services, pending)
+        # Recorded before it runs, so a crash mid-operation still leaves a record. `_execute` does
+        # not audit, because the other way in - an `Allowed` verdict - was already recorded by the
+        # guard when it allowed it.
+        services.guard.audit_decision(pending, decision="allowed", reason="approved by the user")
+        await _execute(services, pending.capability, pending.resolved_args)
     else:
         # So the identical invocation is not offered again this session.
         services.guard.record_rejection(pending)
@@ -488,20 +492,24 @@ async def _apply_decision(services: BrainServices, message: ApprovalDecision) ->
     )
 
 
-async def _execute(services: BrainServices, pending: Pending) -> None:
-    """Runs an approved invocation, recording it before it runs.
+async def _execute(services: BrainServices, capability: Capability, resolved_args: dict) -> None:
+    """Runs an invocation the guard let through, whichever way it let it through.
 
-    Audited first so a crash mid-operation still leaves a record - docs/SECURITY.md section 9. A
-    handler that raises is still recorded as having been allowed, because it was; what changes is
-    that the user is told it did not work.
+    **Takes the capability and its resolved arguments rather than a verdict**, because there are two
+    ways to arrive: a ``Pending`` the user approved, and an ``Allowed`` that needed no human at all.
+    Only the first is audited here - ``Guard.evaluate`` already recorded the second when it allowed
+    it, and a second entry would put two lines in the log for one operation. Auditing is therefore
+    the caller's job, done before this is called so a crash mid-operation still leaves a record
+    (docs/SECURITY.md section 9).
+
+    Taking a ``Pending`` was what hid the defect this signature fixes: an ``Allowed`` had no way in,
+    so a read the guard permitted outright never ran and the turn simply went idle.
 
     Run on a worker thread. Handlers do synchronous file I/O, and doing that on the event loop would
     stall every socket the brain holds - including the telemetry the user is watching - for as long
     as the write takes.
     """
-    services.guard.audit_decision(pending, decision="allowed", reason="approved by the user")
-
-    name = pending.capability.name
+    name = capability.name
 
     # The run is announced before it starts and closed out after. These frames are the only way the
     # UI learns a capability ran: it infers nothing from elapsed time, so a run the brain does not
@@ -516,7 +524,7 @@ async def _execute(services: BrainServices, pending: Pending) -> None:
     )
 
     try:
-        await asyncio.to_thread(pending.capability.handler, **pending.resolved_args)
+        await asyncio.to_thread(capability.handler, **resolved_args)
     except Exception as error:  # noqa: BLE001 - a handler may raise anything; none of it may escape
         # An operation the user approved and which then failed is exactly the case this product must
         # not be silent about. Letting it propagate would tear down the socket and the UI would
@@ -708,8 +716,19 @@ async def _plan(services: BrainServices, message: TurnRequest) -> None:
         )
         return
 
-    # Back to idle. If the verdict is Pending the approval dialog is already up; if it was allowed
-    # outright, _execute has its own tool_running -> idle to report.
+    if isinstance(verdict, Allowed):
+        # Nothing was queued, because nothing needed a human: a read inside the workspace passes
+        # every step and comes back allowed. It runs here, and `_execute` reports its own
+        # tool_running -> idle.
+        #
+        # This branch did not exist, and the comment that stood in its place asserted it did. The
+        # handler was never called, the turn went idle, and nothing failed - so the only visible
+        # symptom was a capability that quietly did nothing.
+        await _execute(services, verdict.capability, verdict.resolved_args)
+        return
+
+    # Pending: the approval dialog is already up and saying what is waiting, so the turn goes idle
+    # rather than narrating over a decision the user is in the middle of reading.
     await services.hub.broadcast(services.messages.turn_state(state="idle", since=utc_now()))
 
 

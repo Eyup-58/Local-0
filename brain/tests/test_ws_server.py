@@ -189,7 +189,11 @@ async def test_an_approved_operation_that_fails_tells_the_user(tmp_path: Path) -
     )
 
     # Must not raise: the failure is reported, not propagated.
-    await _execute(services, verdict)
+    #
+    # Called with the capability and its resolved arguments rather than the verdict: `_execute`
+    # serves both ways in, and only the approval path audits - the guard already recorded an
+    # `Allowed` when it allowed it.
+    await _execute(services, verdict.capability, verdict.resolved_args)
 
     # The run is reported as it happens: announced, logged as running, then closed out as failed and
     # returned to idle before the error itself. The UI infers none of this from elapsed time.

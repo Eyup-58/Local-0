@@ -588,3 +588,76 @@ class TestRefusedProposalStillAnswers:
         errors = [f for f in sent if f["type"] == "error"]
         assert errors, "a failed answer after a refusal must not be silent"
         assert "refused" in errors[0]["payload"]["message"]
+
+
+class TestACapabilityAllowedOutright:
+    """A read inside the workspace passes every guard step and needs no human, so it returns
+    ``Allowed`` rather than ``Pending``.
+
+    That verdict had nowhere to go. ``_execute`` has one production caller - the approval path - so
+    an ``Allowed`` fell through ``_plan`` to an idle turn state with the handler never called, while
+    the comment above that line claimed ``_execute`` was reporting it. Nothing failed and nothing
+    ran, which is the shape of bug a test suite full of ``Pending`` cases cannot see.
+
+    It is shipped behaviour rather than an M5 gap: ``read_text_file`` on a workspace path is exactly
+    this case, and every read capability M5 adds would have hit the same wall.
+    """
+
+    @staticmethod
+    def reading(path: Path) -> ScriptedProvider:
+        return ScriptedProvider(
+            answer=json.dumps({"capability": "read_text_file", "args": {"path": str(path)}})
+        )
+
+    async def test_the_handler_runs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Observed through the frames ``_execute`` emits: a handler that never ran reports nothing."""
+        services, sent = build_services(tmp_path, self.reading(tmp_path / "workspace" / "note.txt"), monkeypatch)
+        (tmp_path / "workspace" / "note.txt").write_text("the log lives here", encoding="utf-8")
+
+        await _plan(services, request("read my note"))
+
+        logs = [frame for frame in sent if frame["type"] == "tool.log"]
+        assert logs, "an allowed capability ran nothing and reported nothing"
+        assert logs[-1]["payload"]["status"] == "ok"
+        assert logs[-1]["payload"]["capability"] == "read_text_file"
+
+    async def test_it_is_reported_as_running_and_then_idle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The panel infers nothing from elapsed time, so a run it is not told about is a run it
+        cannot draw."""
+        services, sent = build_services(tmp_path, self.reading(tmp_path / "workspace" / "note.txt"), monkeypatch)
+        (tmp_path / "workspace" / "note.txt").write_text("the log lives here", encoding="utf-8")
+
+        await _plan(services, request("read my note"))
+
+        assert states(sent) == ["thinking", "tool_running", "idle"]
+
+    async def test_it_is_audited_once_rather_than_twice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``evaluate`` already records an ``Allowed``. Auditing again on the way to the handler
+        would put two entries in the log for one operation, and an audit that double-counts is one
+        nobody can reconcile against what actually happened."""
+        services, _ = build_services(tmp_path, self.reading(tmp_path / "workspace" / "note.txt"), monkeypatch)
+        (tmp_path / "workspace" / "note.txt").write_text("the log lives here", encoding="utf-8")
+
+        await _plan(services, request("read my note"))
+
+        lines = (tmp_path / "logs" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        entries = [json.loads(line) for line in lines if line.strip()]
+        assert [entry for entry in entries if entry["capability"] == "read_text_file"] != []
+        assert len([entry for entry in entries if entry["capability"] == "read_text_file"]) == 1
+
+    async def test_a_failing_handler_is_still_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The file is not there. An allowed operation that then fails must not be silent either -
+        the same rule the approval path already follows."""
+        services, sent = build_services(tmp_path, self.reading(tmp_path / "workspace" / "absent.txt"), monkeypatch)
+
+        await _plan(services, request("read my note"))
+
+        assert [frame for frame in sent if frame["type"] == "error"]
+        logs = [frame for frame in sent if frame["type"] == "tool.log"]
+        assert logs[-1]["payload"]["status"] == "failed"
