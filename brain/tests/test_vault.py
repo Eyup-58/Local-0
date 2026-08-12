@@ -137,6 +137,26 @@ class TestTrust:
         for folder in AGENT_FOLDERS:
             assert trust_of(Path(folder) / "note.md", metadata) == "untrusted"
 
+    def test_an_agent_folder_nested_under_a_trusted_one_is_still_untrusted(self) -> None:
+        """The trap this closes was live, and it caught someone.
+
+        `docs/ROADMAP.md` described the agent zone as `Memory/LocalZero/` in three places, while the
+        code has always written to `LocalZero/` at the vault root. Trust was decided by the *first*
+        path segment, so the documented location was the one place that broke the rule it documented:
+        `Memory` is a trusted folder, so a note there read as the user's own. It was followed - that
+        folder was created in a real vault on 2026-08-12.
+
+        Only a `source: agent` stamp stood between that and agent text reaching the planner, and a
+        stamp is something a note can be missing. A folder name should mean the same thing wherever
+        it appears.
+        """
+        metadata, _ = parse_note("hello")
+
+        for folder in AGENT_FOLDERS:
+            for trusted in TRUSTED_FOLDERS:
+                path = Path(trusted) / folder / "note.md"
+                assert trust_of(path, metadata) == "untrusted", f"{path} must not be trusted"
+
     def test_every_trusted_folder_is_trusted(self) -> None:
         metadata, _ = parse_note("hello")
 

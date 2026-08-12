@@ -266,7 +266,7 @@ So trust follows **who wrote it**, recorded in each note's frontmatter, not wher
 | Location | Trust | Written by |
 |---|---|---|
 | `Memory/`, `Projects/`, `Knowledge/`, `System/` | trusted | the user, by hand |
-| `Memory/LocalZero/`, `Conversations/` | **untrusted** | Local Zero, `source: agent` |
+| `LocalZero/`, `Conversations/` | **untrusted** | Local Zero, `source: agent` |
 | `Archive/` | untrusted | the forgetting path |
 
 Promotion from agent-written to trusted is a human moving a file. There is no API for it.
@@ -275,10 +275,10 @@ Exit criteria:
 
 - [ ] A trusted note reaches the planner; an `UntrustedChunk` provably cannot — the type has no
       conversion to `TrustedChunk` and a test asserts it
-- [ ] Agent-written memory lands in `Memory/LocalZero/` and is retrieved as untrusted, tested with
+- [ ] Agent-written memory lands in `LocalZero/` and is retrieved as untrusted, tested with
       an injection fixture that reaches the Reader and produces no invocation
 - [ ] Vault writes go through **registered capabilities** with `allowed_roots` limited to
-      `Memory/LocalZero/` and `Archive/`; every other vault path is on the guard's protected list,
+      `LocalZero/` and `Archive/`; every other vault path is on the guard's protected list,
       with a test per path
 - [ ] Forgetting archives by default; permanent deletion is `destructive` and needs its own approval
 - [ ] Embeddings never leave the machine in either mode — test

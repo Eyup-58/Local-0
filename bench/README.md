@@ -24,6 +24,15 @@ Then, in another:
 | `bench/idle_cpu.py` | P5 | yes | ~5 min |
 | `bench/ws_latency.py` | P4 | yes | ~10 min |
 | `bench/poll_latency.py` | P3 | **no** — it starts its own sidecar | ~10 min |
+| `bench/reindex_incremental.py` | M4.5 exit criterion, not a P-budget | **no** — temporary vault, library only | ~10 s |
+
+`reindex_incremental.py` is the odd one out: it answers a ROADMAP exit criterion rather than a
+`PERFORMANCE.md` budget. M4.5 asks that incremental reindex "touches only changed files, **measured**
+rather than asserted", and a test asserting `indexed == 1` would prove the counter says one, not that
+the second scan is cheaper. It reports counts and wall time for a cold build and a rescan, with and
+without embeddings — only the embedded figure covers the criterion, because re-embedding is where a
+broken incremental path actually costs. When Ollama is not answering it says so rather than reporting
+the keyword number as though it counted.
 
 `poll_latency.py` runs the sidecar itself, with `LOCALZERO_BENCH=1` so it emits per-tick sweep
 durations to stderr. That switch is off in normal operation: the IPC contract has no field for a

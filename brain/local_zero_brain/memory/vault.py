@@ -148,6 +148,19 @@ def trust_of(relative_path: Path, metadata: NoteMetadata) -> Trust:
         # A note loose in the vault root. Nobody has said what it is, so it is not trusted.
         return "untrusted"
 
+    # An agent folder anywhere in the path wins, not only as the first segment.
+    #
+    # This was found the hard way. docs/ROADMAP.md described the agent zone as `Memory/LocalZero/`
+    # in three places while the code has always written to `LocalZero/` at the root - and with trust
+    # decided by the first segment alone, the documented path was the one location that broke the
+    # rule it documented: `Memory` is trusted, so a note under it read as the user's own. Somebody
+    # followed the document and created that folder in a real vault.
+    #
+    # A `source: agent` stamp above is what actually stopped it, and a stamp is a thing a note can
+    # be missing. A folder called LocalZero should mean the same wherever it appears.
+    if any(part in AGENT_FOLDERS for part in parts[:-1]):
+        return "untrusted"
+
     return "trusted" if parts[0] in TRUSTED_FOLDERS else "untrusted"
 
 
