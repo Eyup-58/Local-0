@@ -578,29 +578,69 @@ person who built it: three processes started by hand, the UI on a Vite dev serve
 the repository left to work out the order. For something about to be open-sourced that is not a
 finishing touch, it is the difference between a project and a program.
 
-Two concrete gaps, measured rather than assumed:
+Two concrete gaps, measured rather than assumed. **Both closed 2026-08-13 by one change** — the
+brain serves `ui/dist` from the same origin as its socket, which deleted the second one instead of
+relocating it:
 
-- **Nothing serves the built UI.** `ui/dist` is produced by `npm run build` and no process hosts it;
-  the brain mounts no static files. The dev server is doing that job today.
-- **The UI hardcodes `ws://127.0.0.1:8765/ws`** (`ui/src/ws/useTelemetry.ts`). Loopback is correct
-  and stays; the port being a literal in the client is what needs deciding.
+- ~~**Nothing serves the built UI.**~~ `ui/dist` is produced by `npm run build` and no process hosted
+  it; the dev server was doing that job. The brain now mounts it at `/`.
+- ~~**The UI hardcodes `ws://127.0.0.1:8765/ws`**~~ (`ui/src/ws/useTelemetry.ts`). Loopback is
+  correct and stays. Same origin means the client derives the URL and the port is not in the UI.
 
 What is **not** a gap, checked before this was written: no machine-specific path exists in
 production code, and the only environment variables read are `LOCALAPPDATA`, `SystemRoot`, the three
 `ProgramFiles` forms, and `OBSIDIAN_VAULT_PATH`. Steam is discovered from its own registry key.
 Nothing about this build assumes it is this machine.
 
+**Split into two phases, and the first is done.** Phase A is running the product: one command, no
+dev server, prerequisites named. Phase B is installing it: an artifact, an uninstall, and a machine
+that is not this one. The four criteria below that carry evidence were verified on 2026-08-13; the
+four that do not are Phase B and are not claimed.
+
+**One thing Phase A moved that the bench has not caught up with.** `bench/run_stack.py` and
+`bench/_harness.py` still start the dev shape, and P1/P2's `ui` figure is a Vite/node process. With
+the brain serving the UI that number becomes the browser's, which is a different measurement of a
+different thing. Left alone deliberately rather than silently re-baselined — `PERFORMANCE.md` gets
+the correction when Phase B lands and there is a packaged artifact to measure instead.
+
 Exit criteria:
 
-- [ ] One command starts all three layers, and stopping it stops all three. No step of the current
-      three-terminal sequence survives as something a user is expected to know.
-- [ ] The UI ships as built assets with no dev server, and the port the client connects to is
-      configured in one place rather than being a literal in two.
-- [ ] **Every process still runs `asInvoker` and the install needs no elevation.** An installer that
-      asks for administrator would break red line 11 to deliver a convenience, and the whole
-      privilege model with it.
-- [ ] A missing prerequisite — no .NET runtime, no Ollama, no model pulled — is a clear message
-      naming what to install, not a crash or a silent degrade.
+- [x] ~~One command starts all three layers~~ **One command starts the product, and stopping it
+      stops everything it started.** The criterion was written expecting three processes; there are
+      two, because serving `ui/dist` from the brain turned the UI into static assets rather than a
+      server. That is the smaller claim to keep honest, not a weaker one — `uv run python run.py`,
+      Ctrl+C, nothing left behind. Verified 2026-08-13: the launcher served
+      `http://127.0.0.1:8765/` with sidecar pid 22800 up, and after one Ctrl+Break the port was
+      closed and no `LocalZero.System.exe` remained. The shutdown path itself is held permanently by
+      `test_stopping_the_launcher_stops_the_sidecar_it_started`, which is a separate check because
+      a console control event reaches the whole process group and would have passed the end-to-end
+      run whether or not `stop_sidecar` did anything.
+      **Uvicorn runs inside `run.py` rather than under `uv run uvicorn`**, which is the M6 finding
+      applied rather than re-learned: that command puts a launcher between the caller and the
+      process holding the port, and `bench/fault_injection.py` needed `kill_tree` to get past it.
+- [x] The UI ships as built assets with no dev server, and the port is in one place — `BIND_PORT` in
+      `brain/local_zero_brain/ws/server.py`. The client derives `ws://{location.host}/ws` from the
+      origin it was served from, so **there is no port in the UI at all**, which is a better outcome
+      than the criterion asked for and came out of the same change. `npm run dev` still works: the
+      Vite server proxies `/ws` to the brain, verified 2026-08-13 by handshaking through
+      `ws://127.0.0.1:5173/ws` and getting `server.hello` from the brain.
+- [x] **Every process runs `asInvoker`.** `run.py` is an ordinary unelevated Python process starting
+      an ordinary unelevated child, with no shell and one argument in a list. Nothing here can
+      elevate, and the sidecar still refuses to run if something else did. *Restated for the
+      installer phase: this criterion is re-checked against the installer when there is one.*
+- [x] A missing prerequisite is a clear message naming what to install — verified for each:
+      an unbuilt sidecar names `dotnet build`; a sidecar that exits at once has **its own stderr
+      quoted** rather than a guess pinned on it; an unbuilt UI names `npm run build` and the socket
+      still serves (`test_an_unbuilt_ui_names_the_command_and_leaves_the_socket_working`); a missing
+      Ollama and an unpulled model are distinguished, and each names its `ollama pull`
+      (two tests in `brain/tests/test_launcher.py`, monkeypatched rather than by stopping the user's
+      model server). Both Ollama cases are warnings, not failures: the brain genuinely runs without
+      it, and the criterion asks for the degrade to be **stated**, not prevented.
+      **A second instance was added to this list after it happened.** Starting the launcher twice
+      produced a 9-line `IOException` stack from the sidecar — true, and about the wrong thing. It
+      now says Local Zero is already running and names the pipe. The check could not be
+      `Path.exists()`: `stat` on a pipe whose instances are all busy raises WinError 231 instead of
+      answering, so the pipe directory is listed instead.
 - [ ] No key, no vault path and no absolute path from this machine is baked into the artifact.
       Verified by inspecting the built package, not by trusting the source.
 - [ ] Uninstalling removes what was installed and leaves what the user made: the vault is untouched,

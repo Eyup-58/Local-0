@@ -71,6 +71,9 @@ recorded as "not measured" with the reason.
 ## Commands
 
 ```
+# Run the product. Two processes, Ctrl+C stops both. Needs `dotnet build` and `npm run build` first.
+uv run python run.py
+
 # system/  (.NET SDK 10.0.302, installed 2026-08-11)
 dotnet build
 dotnet test
