@@ -25,6 +25,8 @@ Then, in another:
 | `bench/ws_latency.py` | P4 | yes | ~10 min |
 | `bench/poll_latency.py` | P3 | **no** — it starts its own sidecar | ~10 min |
 | `bench/reindex_incremental.py` | M4.5 exit criterion, not a P-budget | **no** — temporary vault, library only | ~10 s |
+| `bench/soak.py` | M6 exit criterion, not a P-budget | yes, **and Ollama** | ~64 min (180 s settle + 60 min) |
+| `bench/fault_injection.py` | M6 exit criterion, not a P-budget | **no** — starts and kills its own stack | ~4 min |
 
 `reindex_incremental.py` is the odd one out: it answers a ROADMAP exit criterion rather than a
 `PERFORMANCE.md` budget. M4.5 asks that incremental reindex "touches only changed files, **measured**
@@ -33,6 +35,15 @@ the second scan is cheaper. It reports counts and wall time for a cold build and
 without embeddings — only the embedded figure covers the criterion, because re-embedding is where a
 broken incremental path actually costs. When Ollama is not answering it says so rather than reporting
 the keyword number as though it counted.
+
+`soak.py` and `fault_injection.py` answer M6's exit criteria the same way `reindex_incremental.py`
+answers M4.5's. `soak.py` drives a real workload while it samples — a turn every two minutes and a
+reindex every ten — because an idle hour would re-measure P1 and P2 and leave the planner, the
+reader, the embedding index and the capability path untouched. It reports growth as a least-squares
+slope per hour rather than a first-to-last delta, and **discards a run in which no turn was
+answered**: a flat line produced by nothing happening is not evidence that anything is bounded.
+`fault_injection.py` is the only script here that starts and kills processes, and it kills by PID so
+a developer's own sidecar in another terminal is never collateral.
 
 `poll_latency.py` runs the sidecar itself, with `LOCALZERO_BENCH=1` so it emits per-tick sweep
 durations to stderr. That switch is off in normal operation: the IPC contract has no field for a
