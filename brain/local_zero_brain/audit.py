@@ -129,6 +129,20 @@ class AuditLog:
         self._path = path
         self._lock = threading.Lock()
 
+    @staticmethod
+    def default_path() -> Path:
+        """``%LOCALAPPDATA%\\LocalZero\\logs\\audit.jsonl`` - a sibling of the workspace.
+
+        It was a relative ``logs/audit.jsonl`` until M7, which put it wherever the process happened
+        to be started from. From a checkout that is the repository; from an installed package it is
+        the program directory, where an uninstall would delete the user's own record along with the
+        binaries. It is user data, so it lives where the workspace, the trust file and the memory
+        index already do - and outside the workspace, so no capability can write it.
+        """
+        from local_zero_brain.capabilities.paths import workspace_root
+
+        return workspace_root().parent / "logs" / "audit.jsonl"
+
     @property
     def path(self) -> Path:
         return self._path

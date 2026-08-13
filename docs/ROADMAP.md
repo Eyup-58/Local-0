@@ -592,10 +592,18 @@ production code, and the only environment variables read are `LOCALAPPDATA`, `Sy
 `ProgramFiles` forms, and `OBSIDIAN_VAULT_PATH`. Steam is discovered from its own registry key.
 Nothing about this build assumes it is this machine.
 
-**Split into two phases, and the first is done.** Phase A is running the product: one command, no
-dev server, prerequisites named. Phase B is installing it: an artifact, an uninstall, and a machine
-that is not this one. The four criteria below that carry evidence were verified on 2026-08-13; the
-four that do not are Phase B and are not claimed.
+**Split into two phases; both are built, and one criterion out of eight is not claimed.** Phase A is
+running the product: one command, no dev server, prerequisites named. Phase B is installing it: a
+package, an uninstall, an artifact check and the threat-check. Everything below was verified on
+2026-08-13 except "a machine that is not this one", which stays `DOĞRULANAMADI` — see the risk at
+the end, which was written before any of this was built and has not been softened since.
+
+**What Phase B ships**, all under `packaging/`: `build.py` produces `dist/LocalZero-0.1.0/` and a
+**34.4 MiB zip** (79 MiB unpacked) — the sidecar published self-contained so no .NET runtime is
+needed, the built UI, and the brain as source with `uv.lock`. `install.ps1` copies it under
+`%LOCALAPPDATA%\Programs\LocalZero`, runs `uv sync --frozen --no-dev`, and makes a Start Menu
+shortcut. **uv is the one prerequisite**, and it fetches its own Python. `inspect_artifact.py`
+reads the bytes that ship.
 
 **One thing Phase A moved that the bench has not caught up with.** `bench/run_stack.py` and
 `bench/_harness.py` still start the dev shape, and P1/P2's `ui` figure is a Vite/node process. With
@@ -641,15 +649,50 @@ Exit criteria:
       now says Local Zero is already running and names the pipe. The check could not be
       `Path.exists()`: `stat` on a pipe whose instances are all busy raises WinError 231 instead of
       answering, so the pipe directory is listed instead.
-- [ ] No key, no vault path and no absolute path from this machine is baked into the artifact.
-      Verified by inspecting the built package, not by trusting the source.
-- [ ] Uninstalling removes what was installed and leaves what the user made: the vault is untouched,
-      and the workspace, audit log and memory index are either kept or removed on an explicit choice.
-- [ ] **It runs on a machine that is not this one.** See the risk below - this criterion is
-      `DOĞRULANAMADI` until a second machine exists, and the milestone does not pass on the strength
-      of it working here.
-- [ ] `/threat-check` reports clean, with attention to what the package grants: an installer writes
-      files and creates shortcuts, which is a new surface this project has not had before.
+- [x] No key, no vault path and no absolute path from this machine is baked into the artifact —
+      `packaging/inspect_artifact.py`, **250 files scanned, clean** (2026-08-13). It reads the bytes
+      that ship, in **UTF-8 and UTF-16LE**, because a path compiled into a .NET assembly is UTF-16
+      and a UTF-8 scan would walk straight past it. It runs inside `build.py` and **deletes a
+      package that fails**, so it cannot become a step somebody forgets.
+      **The check is itself checked.** A scanner that finds nothing and a clean artifact look
+      identical from outside, so `brain/tests/test_packaging.py` plants each kind of finding - a
+      build path, the same path hidden in UTF-16, a key-shaped string, one straddling a read chunk
+      boundary, a `.pyc` - and requires each to be caught.
+      What made this real rather than theatre: `__pycache__` is excluded from the package because a
+      `.pyc` records the absolute path it was compiled from, and `-p:DebugType=none` drops the
+      `.pdb`s for the same reason.
+- [x] Uninstalling removes what was installed and leaves what the user made — verified 2026-08-13
+      against a real install and uninstall. The program went; `workspace`, `memory.sqlite`,
+      `provider.json` and `trust.json` were **listed by name and kept**, with the command that
+      removes them printed. `-RemoveData` and `-RemoveStoredKey` are the explicit choices; the
+      stored cloud key is separate because a key is not a file and deleting it silently would be its
+      own surprise. The vault is never touched by anything here.
+      **The audit log had to move first.** It defaulted to a relative `logs/audit.jsonl`, which from
+      an installed package is the program directory - so an uninstall would have deleted the user's
+      own record of what the program did, along with the binaries. It now defaults beside the
+      workspace, outside it, where no capability can write it.
+- [ ] **It runs on a machine that is not this one.** `DOĞRULANAMADI`. The self-contained publish and
+      the uv-fetched Python are what should make this true - the package needs no .NET runtime and
+      no preinstalled Python - but "should" is not a measurement, and this machine is the worst
+      possible instrument for it. Unchanged: a clean Windows VM, or this stays unverified.
+- [x] `/threat-check` on the packaged surface, 2026-08-13 — **three findings, all fixed and
+      re-verified**:
+      **HIGH, and the reason this run was worth doing.** `ARCHITECTURE.md` §4 had claimed since M3
+      that the UI's lack of authority rests on same-origin *and a strict CSP*. **There was no CSP** -
+      no header, no meta tag, nowhere in the repository. Nothing served the page until M7, so the
+      claim had had nowhere to live and nobody had noticed. The brain now sends one with every
+      response, and `connect-src 'self'` - the one directive whose behaviour could not be assumed -
+      was measured in Chromium against the installed package rather than reasoned about: the socket
+      opened, no violation, live telemetry on the page.
+      **MEDIUM.** `install.ps1` and `uninstall.ps1` ran `Remove-Item -Recurse -Force` on whatever
+      `-InstallRoot` pointed at. The directory a user is most likely to name by mistake is
+      `%LOCALAPPDATA%\LocalZero`, which is not the program - it is their workspace, trust state and
+      memory index. Both now refuse anything that is not recognisably a previous install; verified
+      by aiming the installer at the data root and at an unrelated directory, and confirming the
+      file in it survived.
+      **MEDIUM.** The uninstaller carried `"LocalZero/gemini"` as a literal, duplicating
+      `GEMINI_TARGET`. If the constant moved, an uninstall would quietly stop removing the stored
+      key while the user believed it was gone. A test now binds the two.
 
 **The risk, stated up front like U1 was.** Every other milestone could be verified on this machine.
 This one cannot: "somebody else can install and run it" is exactly the claim a developer's own

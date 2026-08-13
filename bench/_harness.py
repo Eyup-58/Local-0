@@ -167,8 +167,11 @@ def find_processes() -> dict[str, psutil.Process]:
         elif name in ("python.exe", "pythonw.exe") and "local_zero_brain" in cmdline:
             found["brain"] = process
 
-        elif name.startswith("node") and "vite" in cmdline:
-            found.setdefault("ui", process)
+        # There is deliberately no "ui" entry. Until M7 the UI was a Vite process and could be
+        # measured; the brain now serves the built assets and the UI is a tab in whichever browser
+        # the user has open. Matching on that would report the browser's cost - tabs, extensions and
+        # all - as Local Zero's, which is a worse answer than reporting that it is not measured.
+        # The scripts that used to include it say so in their notes.
 
     return found
 

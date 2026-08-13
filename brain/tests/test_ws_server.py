@@ -85,6 +85,30 @@ def test_the_built_ui_is_served_from_the_same_origin_as_the_socket(tmp_path: Pat
     assert "Local Zero" in page.text
 
 
+def test_every_page_is_served_with_the_csp_the_architecture_claims(tmp_path: Path) -> None:
+    """docs/ARCHITECTURE.md section 4 rests the UI's lack of authority on same-origin and a CSP.
+
+    The CSP did not exist until M7 gave the page a server. These are the directives that make the
+    claim true rather than aspirational; connect-src must stay 'self' so the socket still connects
+    and no port literal comes back.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    with TestClient(isolated_app(tmp_path, ui_dist=dist)) as client:
+        page = client.get("/")
+
+    policy = page.headers["content-security-policy"]
+    assert "default-src 'self'" in policy
+    assert "script-src 'self'" in policy
+    assert "object-src 'none'" in policy
+    assert "frame-ancestors 'none'" in policy
+    assert "connect-src 'self'" in policy
+    assert ":8765" not in policy
+    assert page.headers["x-content-type-options"] == "nosniff"
+
+
 def test_an_unbuilt_ui_names_the_command_and_leaves_the_socket_working(tmp_path: Path) -> None:
     """A missing build is a stated fact, not a crash. Everything but the page still works."""
     lines: list[str] = []

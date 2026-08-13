@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from local_zero_brain.audit import AuditLog, AuditRecord
+from local_zero_brain.capabilities.paths import workspace_root
 
 
 def make_record(**overrides: object) -> AuditRecord:
@@ -131,3 +132,17 @@ def test_the_directory_is_created_if_missing(tmp_path: Path) -> None:
     log.record(make_record())
 
     assert (tmp_path / "logs" / "audit.jsonl").exists()
+
+
+def test_the_default_path_is_user_data_beside_the_workspace() -> None:
+    """The audit log is something the user made, so it must not live inside the installed app.
+
+    It defaulted to a relative ``logs/audit.jsonl`` - fine from a checkout, and in an installed
+    package that is the program directory, where an uninstall would take it with the binaries.
+    """
+    default = AuditLog.default_path()
+
+    assert default.is_absolute()
+    assert default.parent.parent == workspace_root().parent
+    assert default.name == "audit.jsonl"
+    assert not default.is_relative_to(workspace_root())

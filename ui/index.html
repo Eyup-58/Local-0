@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- An empty icon, so the browser stops asking for /favicon.ico and logging a 404 in the
+         console of a product that has no icon yet. `data:` is permitted by the img-src directive
+         in the CSP the brain serves. -->
+    <link rel="icon" href="data:," />
     <title>Local Zero — telemetry</title>
   </head>
   <body>
