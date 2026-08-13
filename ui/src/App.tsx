@@ -34,6 +34,7 @@ import { Metric } from "./components/Metric";
 import { Orb } from "./components/Orb";
 import type { OrbMood } from "./components/Orb";
 import { ProviderControl } from "./components/ProviderControl";
+import { ResultTable } from "./components/ResultTable";
 import { TrustControl } from "./components/TrustControl";
 import { formatGibibytes, formatMegahertz, formatPercent, formatUptime, fraction } from "./format";
 import type { SensorCapability, TelemetryPayload, TurnStateName } from "./contracts/types";
@@ -358,7 +359,13 @@ export function App() {
         open={dockOpen}
         onClose={() => setDockOpen(false)}
       >
-        {panel === "tools" && <ToolLogList lines={state.toolLog} />}
+        {panel === "tools" && (
+          <>
+            {/* Above the log, because it is the answer and the log is the record of getting it. */}
+            {state.lastResult && <ResultTable result={state.lastResult} />}
+            <ToolLogList lines={state.toolLog} />
+          </>
+        )}
 
         {panel === "processor" && (
           <>
