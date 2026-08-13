@@ -464,15 +464,51 @@ which is M5/M6 work, and not before.
 
 Real capabilities. Each one enters through the registry; none is special-cased.
 
-Exit criteria:
+Exit criteria, with the evidence for each. Verified 2026-08-13. `516` brain, `76` C#, `178` ui,
+contracts `39/39`.
 
-- [ ] Every new capability is registered with all five fields and has tests for its guard behaviour
-- [ ] Game library detection is strictly read-only
-- [ ] The AMD ADLX spike (U1) is timeboxed: read one temperature value from C#, then stop. **If it
+- [x] Every new capability is registered with all five fields and has tests for its guard behaviour
+      — four added: `list_processes` (read), `open_folder` (write), `scan_games` (read),
+      `launch_application` (destructive). 30 cases in `test_os_capabilities.py` cover containment,
+      canonicalisation, traversal, an undeclared argument, and approval routing per side effect.
+      Two declare no roots, and that is now a statement rather than an omission — see below
+- [x] Game library detection is strictly read-only — structural rather than promised:
+      `capabilities/steam.py` contains no write path at all, only `read_text` and a narrow
+      `glob("appmanifest_*.acf")`. Run against the real install at `d:\steam`: Counter-Strike 2 at
+      68301 MB and the Steamworks redistributables, matching what is on disk
+- [x] The AMD ADLX spike (U1) is timeboxed: read one temperature value from C#, then stop. **If it
       fails, GPU temperature is cut** and the panel ships with load and VRAM. Nothing else may
-      depend on ADLX until this passes.
-- [ ] No capability reads or writes another process's memory
-- [ ] `/threat-check` run **on every capability addition**, not only at the milestone boundary
+      depend on ADLX until this passes. — three go/no-go stages, all passed, and the vtable layout
+      was proved before any value was believed: `GPUVRAM` returned **2942 MB against PDH's 2942 MB**
+      in the same second. Verified end to end rather than in a unit test - sidecar → pipe → brain →
+      WebSocket delivered `gpu.temperature_c=48` while `cpu.temperature_c` stayed null. The
+      no-dependency rule holds structurally: the temperature is its own sensor in its own fault
+      group, so a machine without ADLX keeps PDH's utilization and VRAM
+- [x] No capability reads or writes another process's memory — `list_processes` calls
+      `psutil.process_iter(["name", "pid", "cpu_percent", "memory_info"])` and nothing else.
+      `memory_info` is the working-set counter Windows already publishes; no handle is opened to
+      another process's address space, and `ReadProcessMemory` appears nowhere in the repository
+- [x] `/threat-check` run **on every capability addition**, not only at the milestone boundary —
+      run three times, and it **found something**: `open_folder`'s first draft launched
+      `explorer.exe` by bare name, which CreateProcess resolves by searching, so a file of that name
+      earlier in the search order would decide what ran. Now an absolute path under `%SystemRoot%`
+      with three tests holding it. The finding existed while the capability was being written; at
+      the milestone boundary it would have been three commits deep
+
+**2026-08-13 — two things this milestone changed that were not on the list.**
+
+`allowed_roots` was required of every capability, always, which reads as the stricter rule and is
+not. A capability with no path argument has nothing for step 3 to resolve, so any root it declared
+was never consulted — and handing `list_processes` the workspace to satisfy the constructor would
+have written down a containment claim no code enforces. A control that is decoration is worse than
+an absent one, because a reader counts it. The requirement is now conditional and runs both ways.
+
+**A capability the guard allowed outright never ran.** `_execute` had one production caller, the
+approval path, so an `Allowed` verdict fell through to an idle turn with the handler never called —
+while the comment above that line asserted the opposite. Shipped behaviour since M2:
+`read_text_file` on a workspace path did nothing, silently. Found while tracing where a read
+capability's result would go, which is also what produced `capability.result`: `tool.log` can say a
+capability finished, and for a process list that is the one thing nobody asked.
 
 ---
 
