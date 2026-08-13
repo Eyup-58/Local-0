@@ -153,6 +153,8 @@ running and the UI open in a browser. Raw output for each run is in `bench/resul
 | 2026-08-11 | P3 sweep duration | p50 1.34 ms, **p95 2.00 ms**, p99 2.32 ms, max 3.44 ms | `bench/poll_latency.py` | **PASS** (budget < 50 ms) |
 | 2026-08-11 | P4 latency, sidecar → local consumer | p50 2.76 ms, **p95 4.10 ms**, p99 4.63 ms, max 5.05 ms | `bench/ws_latency.py` | **PASS for the measured segment** (budget < 20 ms) |
 | 2026-08-11 | P5 total idle CPU | **0.302 % of one logical processor** | `bench/idle_cpu.py` | budget set from this floor |
+| 2026-08-13 | P4 latency, re-measured at M6 | p50 5.46 ms, **p95 7.07 ms**, p99 7.50 ms, max 7.99 ms | `bench/ws_latency.py` | **PASS for the measured segment** (budget < 20 ms), and **slower than 2026-08-11** — see below |
+| 2026-08-13 | Long-run growth, 60 min driven (M6, not a P-budget) | private commit **-0.42 / +0.00 / +0.00 MiB per hour** (system / brain / ui), handles +6.8 / 0 / 0 per hour | `bench/soak.py` | **PASS** (guards: 10 MiB/h, 100 handles/h) over 30/30 answered turns |
 
 Verbatim:
 
@@ -171,9 +173,28 @@ ui:     0.02s CPU over 300.0s wall = 0.005% of one core
 P5 total idle CPU: 0.302% of one logical processor
 
 P4 latency (excluding the browser): n=600  p50=2.76ms  p95=4.10ms  p99=4.63ms  max=5.05ms
+
+system: -0.42 MiB/h private  q1 34.2 -> q4 33.9 MiB  max 34.5 MiB  handles +6.8/h  working-set trims 0
+brain:  +0.00 MiB/h private  q1 45.3 -> q4 45.3 MiB  max 45.3 MiB  handles +0.0/h  working-set trims 0
+ui:     +0.00 MiB/h private  q1 104.9 -> q4 104.9 MiB max 104.9 MiB handles +0.0/h  working-set trims 0
+  workload: 30/30 turns answered, 6 reindexes, 3600 telemetry frames, 37 tool logs, 0 errors
 ```
 
-### What these numbers do not cover
+### P4 got slower between M1 and M6, and that is recorded rather than smoothed
+
+The same script, the same 600 frames, the same machine: **p95 4.10 ms on 2026-08-11, 7.07 ms on
+2026-08-13** (`bench/results/P4-ws-latency-20260813T003628Z.json`). Both are inside a 20 ms budget
+and neither is a failure, but a budget with four times the headroom is exactly the budget a
+regression hides in, so the number is written down as it came out.
+
+**No cause is claimed.** The brain gained a capability registry, a guard chain, an audit log, a
+memory index and a provider layer between those two dates, and any of them could plausibly cost a
+few milliseconds per frame — but "plausibly" is not a measurement, and nothing here has profiled the
+per-frame path to say which. What is measured is the delta. Attributing it would be narration.
+
+What this does change: **P4 is now re-measured at every milestone boundary**, not only when
+something is expected to have moved. A second data point is what turned this from an unremarkable
+number into a known one.
 
 Recorded because a measurement quoted beyond its conditions is worse than no measurement.
 
@@ -190,6 +211,29 @@ needed and none was faked. Whatever the browser adds on top is **not measured**.
 **U2 is still not measured.** The idle cost of a visible browser tab compositing regardless of what
 the page draws was inherited from Project 0 and remains unquantified. The 72.0 MiB and 0.005 % above
 are the vite preview server, **not** the browser tab rendering the panel.
+
+### The long-run profile measures private commit, because working set answered a different question
+
+M6 asks whether an extended session grows without bound. The first hour-long run of `bench/soak.py`
+sampled working set, and 43 minutes in it recorded this: the brain fell from **61.8 MiB to 7.2**, the
+UI from **68.4 to 1.5**, and the sidecar from **63.8 to 7.5** — all in the same five-second step, then
+all climbing back as pages were faulted in
+(`bench/results/soak-20260813T120642Z.json`, discarded).
+
+Three processes do not release 85 % of their memory simultaneously. The machine reclaimed it, which
+is the trap `§2` already names for P1 and P2 — and the run discarded itself on the memory-load
+tolerance, as designed. But the deeper problem is that the tolerance was protecting the wrong metric:
+**working set is a statement about what is resident under current pressure**, and no threshold on it
+can answer "is this growing without bound" on a machine that also runs a 17 GB model.
+
+The soak now decides on **private commit** — what a process asked for and has not given back, which
+the OS does not trim. Working set is still sampled and reported, since P1 and P2 are written against
+it, and any cliff in that series is now counted as a trim event so a reader is not left to guess
+what the drop meant. The memory-load swing became a note rather than a discard for the same reason:
+it makes the RSS series unreadable and leaves the verdict untouched.
+
+`idle_rss.py` keeps its discard rule unchanged. P1 and P2 *are* working-set budgets, so pressure
+genuinely invalidates them.
 
 ### A wrong number caught before it was written down
 

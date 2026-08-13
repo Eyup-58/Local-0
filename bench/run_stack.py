@@ -21,25 +21,15 @@ import subprocess
 import sys
 import time
 
-from _harness import BRAIN_PORT, REPOSITORY_ROOT, find_processes, require_built_sidecar, start_sidecar
+from _harness import (
+    REPOSITORY_ROOT,
+    find_processes,
+    require_built_sidecar,
+    start_brain,
+    start_sidecar,
+)
 
 UI_PORT = 5173
-
-
-def start_brain() -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        [
-            "uv", "run", "uvicorn",
-            "--app-dir", "brain",
-            "local_zero_brain.ws.server:app",
-            "--host", "127.0.0.1",
-            "--port", str(BRAIN_PORT),
-            "--log-level", "warning",
-        ],
-        cwd=REPOSITORY_ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
 
 def start_ui() -> subprocess.Popen[bytes] | None:
