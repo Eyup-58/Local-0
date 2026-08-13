@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -140,6 +141,50 @@ def launch_application(path: str) -> None:
     ``shell=False`` with a list, so nothing between here and CreateProcess parses the string.
     """
     subprocess.Popen([path], shell=False)  # noqa: S603 - argv list, no shell, .exe enforced above
+
+
+class ScanGamesArgs(CapabilityArgs):
+    """No arguments.
+
+    Not even a library to scan. The libraries are discovered from Steam's own files, so a path here
+    would be a second, model-supplied way to say where to look - and the one thing worth having is
+    that there is exactly one.
+    """
+
+
+def _games_table(apps: Sequence[steam.InstalledApp]) -> ResultTable:
+    """Shapes what the scan found into the table the panel draws.
+
+    Split from the scan so the rendering decisions - an unknown size, a title that reads like an
+    instruction - are testable without a Steam install.
+    """
+    return ResultTable.of(
+        ("name", "app_id", "size_mb", "install_dir"),
+        (
+            (
+                app.name,
+                app.app_id,
+                # A gap, not a zero. Steam did not record a size; "0 MB" would be a claim about
+                # disk that nobody made - invariant 10 in a different place.
+                round(app.size_bytes / _BYTES_PER_MB) if app.size_bytes is not None else "unknown",
+                app.install_dir,
+            )
+            for app in apps
+        ),
+    )
+
+
+def scan_games() -> ResultTable:
+    """What Steam records as installed.
+
+    **Read-only structurally, not by promise:** this reads files and there is no write path in it,
+    which is what the M5 exit criterion asks for.
+
+    Every cell is somebody else's text - a title is whatever a publisher typed into a store page -
+    so it travels to the panel as display data and reaches no executor. Nothing scanned here is
+    fed back to the planner.
+    """
+    return _games_table(steam.installed_apps())
 
 
 def _launch_roots() -> tuple[Path, ...]:
@@ -369,6 +414,15 @@ def build_registry(
                 side_effect="write",
                 allowed_roots=(workspace,),
                 handler=open_folder,
+            ),
+            Capability(
+                name="scan_games",
+                args_schema=ScanGamesArgs,
+                side_effect="read",
+                # No path argument: the libraries are discovered, not supplied, so there is nothing
+                # for step 3 to contain and no root that would ever be consulted.
+                allowed_roots=(),
+                handler=scan_games,
             ),
             Capability(
                 name="launch_application",
