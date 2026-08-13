@@ -7,7 +7,7 @@ contradicted or confirmed one, that is recorded here rather than left to be infe
 **Scope:** layer boundaries, runtime justification, privilege model, sensor strategy, IPC choice,
 failure behaviour.
 
-Design decisions here are binding on M1–M6. Where a decision is genuinely open it is marked
+Design decisions here are binding on M1–M7. Where a decision is genuinely open it is marked
 **OPEN QUESTION** rather than guessed at.
 
 > **Predecessor.** Local Zero supersedes `E:\Project 0`, a Windows telemetry panel that reached a
@@ -348,7 +348,7 @@ E:\Local Zero\
 │  ├─ SECURITY.md               threat model, guard chain, approval flow
 │  ├─ CONTRACTS.md              message reference and change procedure
 │  ├─ PERFORMANCE.md            budgets and how each is measured
-│  └─ ROADMAP.md                M0–M6 with exit criteria
+│  └─ ROADMAP.md                M0–M7 with exit criteria
 ├─ contracts\
 │  ├─ ipc.schema.json           system <-> brain, single source of truth
 │  ├─ ws.schema.json            brain <-> ui, single source of truth

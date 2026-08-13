@@ -5,7 +5,7 @@
 `/gate` reads the exit criteria below and verifies each one individually, with evidence. A criterion
 without evidence is `DOĞRULANAMADI` (unverifiable), never PASS. Nothing here is self-certified.
 
-Each milestone gets its own planning session. Do not plan M1–M6 in one pass: the contract and the
+Each milestone gets its own planning session. Do not plan M1–M7 in one pass: the contract and the
 budgets will change once M1 produces real measurements, and later plans must be written against
 those, not against today's guesses.
 
@@ -527,7 +527,51 @@ Exit criteria:
 
 ---
 
-## Command reference
+## M7 — Packaging
+
+**Added 2026-08-13, after M5.** Until this exists the only person who can run Local Zero is the
+person who built it: three processes started by hand, the UI on a Vite dev server, and a reader of
+the repository left to work out the order. For something about to be open-sourced that is not a
+finishing touch, it is the difference between a project and a program.
+
+Two concrete gaps, measured rather than assumed:
+
+- **Nothing serves the built UI.** `ui/dist` is produced by `npm run build` and no process hosts it;
+  the brain mounts no static files. The dev server is doing that job today.
+- **The UI hardcodes `ws://127.0.0.1:8765/ws`** (`ui/src/ws/useTelemetry.ts`). Loopback is correct
+  and stays; the port being a literal in the client is what needs deciding.
+
+What is **not** a gap, checked before this was written: no machine-specific path exists in
+production code, and the only environment variables read are `LOCALAPPDATA`, `SystemRoot`, the three
+`ProgramFiles` forms, and `OBSIDIAN_VAULT_PATH`. Steam is discovered from its own registry key.
+Nothing about this build assumes it is this machine.
+
+Exit criteria:
+
+- [ ] One command starts all three layers, and stopping it stops all three. No step of the current
+      three-terminal sequence survives as something a user is expected to know.
+- [ ] The UI ships as built assets with no dev server, and the port the client connects to is
+      configured in one place rather than being a literal in two.
+- [ ] **Every process still runs `asInvoker` and the install needs no elevation.** An installer that
+      asks for administrator would break red line 11 to deliver a convenience, and the whole
+      privilege model with it.
+- [ ] A missing prerequisite — no .NET runtime, no Ollama, no model pulled — is a clear message
+      naming what to install, not a crash or a silent degrade.
+- [ ] No key, no vault path and no absolute path from this machine is baked into the artifact.
+      Verified by inspecting the built package, not by trusting the source.
+- [ ] Uninstalling removes what was installed and leaves what the user made: the vault is untouched,
+      and the workspace, audit log and memory index are either kept or removed on an explicit choice.
+- [ ] **It runs on a machine that is not this one.** See the risk below - this criterion is
+      `DOĞRULANAMADI` until a second machine exists, and the milestone does not pass on the strength
+      of it working here.
+- [ ] `/threat-check` reports clean, with attention to what the package grants: an installer writes
+      files and creates shortcuts, which is a new surface this project has not had before.
+
+**The risk, stated up front like U1 was.** Every other milestone could be verified on this machine.
+This one cannot: "somebody else can install and run it" is exactly the claim a developer's own
+machine is worst at testing, because everything it needs is already there. A clean Windows VM is
+the honest instrument, and until one is used the packaging criterion above stays unverified rather
+than being marked passed on a successful run here.
 
 | Command | Purpose |
 |---|---|
