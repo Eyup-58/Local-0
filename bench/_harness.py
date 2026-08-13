@@ -229,6 +229,32 @@ def start_sidecar(*, bench_mode: bool) -> subprocess.Popen[str]:
     )
 
 
+def start_brain() -> subprocess.Popen[bytes]:
+    """Starts the brain the way a user would, through uv.
+
+    Lives here rather than in run_stack.py because fault_injection.py starts and kills its own
+    stack: two callers, one definition, and the fault harness must be killing the same thing the
+    measuring harness starts.
+
+    **Note for anything that kills this.** ``uv run`` launches uvicorn as a child, so the returned
+    Popen is a launcher rather than the process holding the socket. Killing it alone leaves the
+    brain running and the port taken - see ``kill_tree`` in fault_injection.py.
+    """
+    return subprocess.Popen(
+        [
+            "uv", "run", "uvicorn",
+            "--app-dir", "brain",
+            "local_zero_brain.ws.server:app",
+            "--host", "127.0.0.1",
+            "--port", str(BRAIN_PORT),
+            "--log-level", "warning",
+        ],
+        cwd=REPOSITORY_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 class PipeDrain:
     """Attaches to the sidecar's pipe and discards everything it sends.
 
