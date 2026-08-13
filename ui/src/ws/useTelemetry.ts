@@ -11,8 +11,18 @@ import { initialState, telemetryReducer, type TelemetryState } from "./reducer";
 
 const UI_VERSION = "0.1.0";
 
-/** Loopback only, matching the brain. See docs/ARCHITECTURE.md section 4. */
-const DEFAULT_URL = "ws://127.0.0.1:8765/ws";
+/**
+ * The origin this page was served from, which is the brain itself - it mounts the built UI at "/"
+ * beside the socket at "/ws". Deriving the URL is what keeps the port in one place: it is
+ * BIND_PORT in brain/local_zero_brain/ws/server.py and nowhere else. Under `npm run dev` the Vite
+ * server proxies /ws to the same brain, so this line is correct on 5173 too.
+ *
+ * Loopback only, matching the brain, which binds 127.0.0.1 and accepts nothing else.
+ * See docs/ARCHITECTURE.md section 4.
+ */
+function defaultUrl(): string {
+  return `ws://${window.location.host}/ws`;
+}
 
 const FIRST_RETRY_MS = 500;
 const MAX_RETRY_MS = 10_000;
@@ -72,7 +82,7 @@ export interface Telemetry {
   readonly ask: (text: string) => boolean;
 }
 
-export function useTelemetry(url: string = DEFAULT_URL): Telemetry {
+export function useTelemetry(url: string = defaultUrl()): Telemetry {
   const [state, dispatch] = useReducer(telemetryReducer, initialState);
   const [now, setNow] = useState(() => Date.now());
   const retryRef = useRef(FIRST_RETRY_MS);

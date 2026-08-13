@@ -313,6 +313,17 @@ the UI as a desktop shell on the strength of an anticipated miss rate would be r
 decision with a predicted one. The trigger stands and moves to whichever milestone first puts an
 approval in front of a user.
 
+**The brain serves the UI, from M7 on.** `ui/dist` is mounted at `/` beside the socket at `/ws`, so
+the page and the WebSocket share one origin. That is what removed the port literal from the client:
+`useTelemetry.ts` derives `ws://{location.host}/ws` and the port is written once, as `BIND_PORT` in
+`ws/server.py`. It also means the same-origin property the M3 decision above rests on is now a fact
+of the deployment rather than of how a developer happened to start two servers.
+
+The mount is Starlette's `StaticFiles` over one fixed directory. It is read-only, it is the only
+filesystem surface the HTTP layer has, and a client-supplied path cannot leave that directory —
+held by `test_the_static_mount_does_not_serve_anything_outside_the_build`. When `ui/dist` does not
+exist the mount is skipped and the brain says which command builds it; the socket is unaffected.
+
 ### gRPC was considered at M6 and not adopted — DECIDED 2026-08-13
 
 gRPC would bring generated types on both ends and a real streaming model. It also brings protobuf

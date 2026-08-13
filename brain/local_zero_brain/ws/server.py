@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from local_zero_brain.audit import AuditLog
@@ -55,7 +56,13 @@ from local_zero_brain.ws.messages import WsMessageFactory, utc_now
 
 #: Loopback only. See the module docstring.
 BIND_HOST = "127.0.0.1"
+#: The one place the port is written. The UI derives its socket URL from the origin it was served
+#: from, so this number does not appear in the client - which is what M7 asked for.
 BIND_PORT = 8765
+
+#: The built UI, served from this same origin. `parents[3]` is the repository root:
+#: brain/local_zero_brain/ws/server.py -> ws -> local_zero_brain -> brain -> root.
+UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
 #: WebSocket close codes. 1002 is "protocol error", which is what a client that will not handshake
 #: correctly has committed.
@@ -172,6 +179,7 @@ def create_app(
     provider_path: Path | None = None,
     credential_target: str | None = None,
     memory_path: Path | None = None,
+    ui_dist: Path | None = None,
 ) -> FastAPI:
     """Builds the application.
 
@@ -298,6 +306,16 @@ def create_app(
     @app.websocket("/ws")
     async def telemetry_socket(websocket: WebSocket) -> None:
         await _serve_ui(websocket, services)
+
+    # Mounted last, and at the root, so it catches everything the socket route did not. Starlette
+    # matches in registration order, which is the only reason "/ws" survives a mount at "/".
+    dist = ui_dist or UI_DIST
+    if (dist / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="ui")
+    else:
+        # Not fatal. Everything except the page works, and a brain that refused to start because a
+        # front end was not built would be a worse answer than saying which command builds it.
+        log(f"ui/dist not found at {dist}; the UI is not served. Run `npm run build` in ui/.")
 
     return app
 
