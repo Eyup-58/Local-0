@@ -306,15 +306,38 @@ to miss, and the page cannot raise its own window because the browser owns it. N
 mitigates that. A desktop shell remains the answer if the miss rate turns out to matter, and M6 is
 where it would be revisited — on observed behaviour rather than a preference for a heavier stack.
 
-### gRPC is deferred to M6, conditionally
+**M6 did not revisit it, and the reason is that there is nothing to revisit it on.** The trigger was
+an observed miss rate, and no dialog has been missed because none has been raised outside tests:
+`invoke()` still has no production caller that reaches the approval queue in ordinary use. Rebuilding
+the UI as a desktop shell on the strength of an anticipated miss rate would be replacing a measured
+decision with a predicted one. The trigger stands and moves to whichever milestone first puts an
+approval in front of a user.
+
+### gRPC was considered at M6 and not adopted — DECIDED 2026-08-13
 
 gRPC would bring generated types on both ends and a real streaming model. It also brings protobuf
 toolchains in two languages, a build step, and a second contract representation alongside the JSON
 Schema that this repo treats as the source of truth.
 
-**Migration happens only if M1–M5 measurements show the JSON pipe is an actual bottleneck against
-the budgets in `PERFORMANCE.md`.** Not because gRPC is more professional. If the numbers do not
-justify it, M6 skips it and says so.
+The condition written at M0 was that migration happens **only if M1–M5 measurements show the JSON
+pipe is an actual bottleneck against the budgets in `PERFORMANCE.md`** — not because gRPC is more
+professional. The measurements are in, and they do not:
+
+- **P3, the sidecar's own sweep**, p95 **2.00 ms** against a 10 ms budget. This is the work that
+  produces a sample, and it is not the transport.
+- **P4, sweep completion through the pipe, the brain and the WebSocket to a local consumer**, p95
+  **7.07 ms** against a 20 ms budget, re-measured 2026-08-13. The whole delivery path costs under
+  1 % of the 1 000 ms it has before the next sample is due.
+- **P1/P2 idle working sets** of 59.3 MiB and 51.4 MiB, neither of which is JSON serialisation.
+
+At 1 Hz with one consumer there is no bottleneck for a faster transport to relieve. The cost of
+migrating is concrete — two toolchains, a build step, and a second source of truth for a contract
+whose single representation is the thing this project keeps its guarantees in — and the benefit is
+currently zero milliseconds. **The JSON pipe stays.**
+
+**What would reopen this.** A measured P4 approaching its 20 ms budget, a sample rate materially
+above 1 Hz, a payload that grows past what a line of JSON should carry, or a second consumer
+process. Any of those is a number; none of them is a preference.
 
 ---
 

@@ -516,14 +516,58 @@ capability finished, and for a process list that is the one thing nobody asked.
 
 Fault injection, RAM and latency profiling, and a possible transport migration.
 
-Exit criteria:
+Exit criteria, with the evidence for each. Verified 2026-08-13. `516` brain, `76` C#, `178` ui,
+contracts `39/39` — unchanged from M5, because this milestone added measurement and decisions rather
+than product code.
 
-- [ ] Fault injection: each layer killed at each stage, recovery verified against §5 of
-      `ARCHITECTURE.md`
-- [ ] Long-run profile: no unbounded memory growth over an extended session
-- [ ] **The gRPC migration happens only if a measured bottleneck justifies it.** If the numbers do
+- [x] Fault injection: each layer killed at each stage, recovery verified against §5 of
+      `ARCHITECTURE.md` — `bench/fault_injection.py`, **4/4 scenarios as §5 requires**
+      (`bench/results/fault-injection-20260813T002510Z.json`, 2026-08-13). Sidecar killed under a
+      live brain: `system.status {connected:false}` **with a reason**, the brain kept serving, and a
+      restarted sidecar reconnected and resumed telemetry. Brain killed under a live sidecar: the
+      sidecar stayed up at **0.1 % of one core**, its RSS plateaued and then fell (43.65 → peak
+      46.77 → 46.56 MiB across a 30 s series), and it accepted a new consumer. Brain killed under a
+      live client: the socket **closed** rather than hanging. Last tab closed: `seq` advanced by 9
+      over 8 s with nothing attached. **Three of §5's seven rows are cited rather than re-run** — a
+      schema-invalid message, a throwing sensor and the UI's own backoff are already held by
+      `InboundMessageParserTests`, `test_session.py`, `guards.test.ts` and `reducer.test.ts`, and a
+      process kill would be a worse instrument for the same claim.
+      Two things the script had to get right to be worth anything: it **kills by PID, never by
+      name**, so a developer's own sidecar in another terminal is not collateral; and it kills the
+      whole tree, because `uv run uvicorn` makes the returned handle a launcher and killing it alone
+      left the brain holding the port — which would have had the next scenario measuring a brain
+      that never died.
+- [x] Long-run profile: no unbounded memory growth over an extended session — `bench/soak.py`, a
+      **conforming 60 minute run under a driven workload** (`bench/results/soak-20260813T131322Z.json`,
+      2026-08-13): 30/30 turns answered, 6 reindexes, 3 600 telemetry frames, 37 tool logs, 14
+      capability results, **0 errors and 0 reconnects**, with embeddings available. Private commit
+      per hour: sidecar **-0.42 MiB/h** (q1 34.2 → q4 33.9), brain **+0.00** (45.3 → 45.3), UI
+      **+0.00** (104.9 → 104.9). Handles +6.8/h, +0.0 and +0.0 against a 100/h guard.
+      An idle hour was rejected as the method: P1 and P2 already measured the idle case at M1, and
+      the paths that could leak — planner, reader, embedding index, sqlite, capability results —
+      only run when something is asked for. So the soak drives a turn every two minutes and a
+      reindex every ten, and **discards a run in which no turn was answered**: a flat line produced
+      by nothing happening is not evidence that anything is bounded.
+      **The instrument had to be changed mid-milestone, and that is the finding worth keeping.** The
+      first hour-long run sampled working set and recorded the brain falling 61.8 → 7.2 MiB, the UI
+      68.4 → 1.5 and the sidecar 63.8 → 7.5 *in the same five-second step*, then all climbing back.
+      Three processes do not free 85 % of their memory at once — Windows reclaimed it. The run
+      discarded itself on the memory-load tolerance as designed, but the tolerance was guarding the
+      wrong metric: working set says what is resident under current pressure, which no threshold can
+      turn into an answer about growth on a machine that also loads a 17 GB model. The verdict is
+      now **private commit**, which is not trimmed; working set is still reported for continuity
+      with P1/P2, with its cliffs counted as trim events. Written up in `PERFORMANCE.md` §5
+- [x] **The gRPC migration happens only if a measured bottleneck justifies it.** If the numbers do
       not, this milestone records that decision and skips the migration. "More professional" is not
-      a reason.
+      a reason. — **Not adopted.** P3 sweep p95 **2.00 ms** against a 10 ms budget; P4 delivery p95
+      **7.07 ms** against 20 ms, re-measured 2026-08-13 (`bench/results/P4-ws-latency-20260813T003628Z.json`);
+      the whole path costs under 1 % of the 1 000 ms a 1 Hz stream has before the next sample is due.
+      There is no bottleneck for a faster transport to relieve, and the cost — protobuf toolchains in
+      two languages, a build step, and a second contract representation beside the JSON Schema this
+      repo treats as its source of truth — is concrete. Written up with what would reopen it in
+      `ARCHITECTURE.md` §4. **P4 also got slower since M1** (p95 4.10 → 7.07 ms); it is recorded in
+      `PERFORMANCE.md` §5 as measured, with no cause claimed, because nothing has profiled the
+      per-frame path to say which of M2–M4.5's additions it is
 
 ---
 
