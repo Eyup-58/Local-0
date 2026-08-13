@@ -53,8 +53,9 @@ def main() -> int:
         print(f"Expected the sidecar and the brain to be running. Found: {sorted(processes)}", file=sys.stderr)
         return 2
 
-    if "ui" not in processes:
-        report.note("no vite process found; the UI's own cost is not included in this total")
+    # Two layers, since M7. The UI is served by the brain as static assets and lives in a browser
+    # tab, so its cost is the browser's and is not measured here rather than being guessed at.
+    report.note("the UI is a browser tab and is not included in this total; see PERFORMANCE.md")
 
     report.note(f"measured layers: {', '.join(sorted(processes))}")
     report.note(f"machine has {psutil.cpu_count()} logical processors")

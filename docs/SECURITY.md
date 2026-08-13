@@ -289,6 +289,26 @@ So: the approval dialog renders **plain text only**. `dangerouslySetInnerHTML` i
 repository. No markdown renderer is imported into the approval path. This is a security control,
 not a styling preference.
 
+### The headers the page is served with — added M7, 2026-08-13
+
+The brain serves the built UI from its own origin, so it is now the thing that can set headers, and
+it sends these with every HTTP response (`SECURITY_HEADERS` in `brain/local_zero_brain/ws/server.py`,
+asserted by `test_every_page_is_served_with_the_csp_the_architecture_claims`):
+
+    Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+        img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none';
+        base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+    X-Content-Type-Options: nosniff
+    Referrer-Policy: no-referrer
+
+**This is defence in depth, and it is second.** The control that actually holds is the rule above:
+nothing renders HTML, so there is no injection point for the CSP to catch. The header exists because
+`docs/ARCHITECTURE.md` §4 had claimed one since M3 and the M7 threat-check found none — a control
+named in a design document and absent from the product is worse than one that was never claimed.
+
+`style-src` permits inline styles because two components set a width and a height computed from
+live telemetry. That is a number reaching a style attribute, not markup reaching the DOM.
+
 ### Required elements
 
 The dialog must show, always, without scrolling:

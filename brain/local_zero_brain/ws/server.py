@@ -64,6 +64,34 @@ BIND_PORT = 8765
 #: brain/local_zero_brain/ws/server.py -> ws -> local_zero_brain -> brain -> root.
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
+#: Sent with every HTTP response. Two notes on the parts that are not obvious:
+#:
+#: ``connect-src 'self'`` is what permits the WebSocket. CSP treats a same-origin ``ws://`` as
+#: 'self' when the page is ``http://`` on the same host and port, which is why the port does not
+#: appear here - naming it would put the literal back that M7 removed from the client. Verified in
+#: Chromium 2026-08-13: the socket connects and the page reports no CSP violation.
+#:
+#: ``style-src`` allows inline styles because two components set a computed width and height from
+#: live telemetry (Gauge.tsx, CoreGrid.tsx). That is a real dynamic value, not an injection path:
+#: no HTML from any source is ever rendered - `dangerouslySetInnerHTML` is banned repository-wide
+#: and bans.test.ts enforces it - so there is nothing for an inline style to be smuggled through.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
 #: WebSocket close codes. 1002 is "protocol error", which is what a client that will not handshake
 #: correctly has committed.
 _CLOSE_PROTOCOL_ERROR = 1002
@@ -196,7 +224,7 @@ def create_app(
     root.mkdir(parents=True, exist_ok=True)
     trust = TrustStore(trust_path or TrustStore.default_path())
     providers = ProviderStore(provider_path or ProviderStore.default_path())
-    audit = AuditLog(audit_path or Path("logs") / "audit.jsonl")
+    audit = AuditLog(audit_path or AuditLog.default_path())
 
     # The embedding provider is always the local one, whatever mode the user has selected. That is
     # docs/SECURITY.md section 11's "embeddings are local in both modes" made structural rather than
@@ -302,6 +330,21 @@ def create_app(
 
     app = FastAPI(title="Local Zero brain", version="0.1.0", lifespan=lifespan)
     app.state.services = services
+
+    @app.middleware("http")
+    async def security_headers(request: Any, call_next: Any) -> Any:
+        """The CSP docs/ARCHITECTURE.md section 4 says this design rests on.
+
+        It said so from M3 and there was no CSP: until M7 nothing in this repository served the
+        page, so the claim had nowhere to live. Now the brain serves it, and this is the header it
+        serves it with. Sent from here rather than as a `<meta>` tag because ``frame-ancestors`` and
+        ``sandbox`` are ignored in meta, and because a header covers every response including the
+        assets.
+        """
+        response = await call_next(request)
+        for header, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(header, value)
+        return response
 
     @app.websocket("/ws")
     async def telemetry_socket(websocket: WebSocket) -> None:

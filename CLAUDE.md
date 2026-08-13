@@ -74,6 +74,10 @@ recorded as "not measured" with the reason.
 # Run the product. Two processes, Ctrl+C stops both. Needs `dotnet build` and `npm run build` first.
 uv run python run.py
 
+# Package it. Produces dist/LocalZero-<version>/ and a zip, and refuses to ship a package that
+# carries a key, a vault path or a path from this machine.
+uv run python packaging/build.py
+
 # system/  (.NET SDK 10.0.302, installed 2026-08-11)
 dotnet build
 dotnet test

@@ -324,6 +324,17 @@ filesystem surface the HTTP layer has, and a client-supplied path cannot leave t
 held by `test_the_static_mount_does_not_serve_anything_outside_the_build`. When `ui/dist` does not
 exist the mount is skipped and the brain says which command builds it; the socket is unaffected.
 
+**And the CSP this section has claimed since M3 now exists.** The paragraph above said the browser
+tab gets its lack of authority from the same-origin policy *and a strict CSP*; the M7 threat-check
+found there was no CSP anywhere — no header, no meta tag. The claim had nowhere to live while the
+dev server was the only thing serving the page. It is now sent by the brain with every HTTP
+response, as `SECURITY_HEADERS` in `ws/server.py`, and its directives are held by a test.
+
+`connect-src` is `'self'` rather than a named port: CSP treats a same-origin `ws://` as `'self'`,
+so the socket connects without putting the literal back that M7 removed from the client. That is
+the one directive whose behaviour could not be assumed, so it was measured — Chromium 2026-08-13,
+against the installed package: the socket opened and the page reported no violation.
+
 ### gRPC was considered at M6 and not adopted — DECIDED 2026-08-13
 
 gRPC would bring generated types on both ends and a real streaming model. It also brings protobuf

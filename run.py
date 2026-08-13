@@ -28,21 +28,30 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent
+#: The repository root in a checkout, and the installed application directory in a package. This
+#: file sits at the top of both, which is what lets one launcher serve both layouts.
+APP_ROOT = Path(__file__).resolve().parent
 
 # The brain is an application, not an installed package - pyproject.toml says so, and puts `brain`
 # on the path for pytest only. This is the same line for the one other entry point.
-sys.path.insert(0, str(REPOSITORY_ROOT / "brain"))
+sys.path.insert(0, str(APP_ROOT / "brain"))
 
-SIDECAR_EXE = (
-    REPOSITORY_ROOT
-    / "system"
-    / "LocalZero.System"
-    / "bin"
-    / "Debug"
-    / "net10.0-windows"
-    / "LocalZero.System.exe"
+#: Where the sidecar might be, most specific first: beside this file in an installed package, then
+#: the two build outputs a checkout can have. Tried in order rather than configured, because the
+#: layout is a fact about the directory and not a choice a user should have to record.
+SIDECAR_CANDIDATES = (
+    APP_ROOT / "system" / "LocalZero.System.exe",
+    APP_ROOT / "system" / "LocalZero.System" / "bin" / "Release" / "net10.0-windows" / "LocalZero.System.exe",
+    APP_ROOT / "system" / "LocalZero.System" / "bin" / "Debug" / "net10.0-windows" / "LocalZero.System.exe",
 )
+
+
+def _locate_sidecar() -> Path:
+    """The first candidate that exists, or the dev build so the message names what to build."""
+    return next((path for path in SIDECAR_CANDIDATES if path.exists()), SIDECAR_CANDIDATES[-1])
+
+
+SIDECAR_EXE = _locate_sidecar()
 
 #: The sidecar's pipe. Its existence means an instance is already serving - see already_running().
 SIDECAR_PIPE = Path(r"\\.\pipe") / "LocalZero.System.v1"

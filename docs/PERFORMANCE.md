@@ -212,6 +212,27 @@ needed and none was faked. Whatever the browser adds on top is **not measured**.
 the page draws was inherited from Project 0 and remains unquantified. The 72.0 MiB and 0.005 % above
 are the vite preview server, **not** the browser tab rendering the panel.
 
+### The `ui` row stopped being a thing that can be measured — 2026-08-13, M7
+
+Every `ui` figure above is a Vite process: the dev server in P1/P2/P5, the preview server in the
+soak. **M7 removed that process.** The brain serves the built assets itself, so what used to be the
+UI layer is now a tab in whichever browser the user already has open.
+
+The rows are **left exactly as they were measured** and are not restated for the new shape. They
+were true of the stack that existed on those dates, and rewriting a measurement to match a later
+architecture is how a results table stops being a record. What changes is going forward:
+
+- `bench/_harness.py` no longer looks for a UI process. Matching the browser would report its tabs,
+  extensions and GPU process as Local Zero's cost, which is a worse answer than "not measured".
+- `bench/idle_cpu.py` states in its notes that the UI is excluded, rather than warning that a vite
+  process was not found.
+- P1, P2 and P5 now describe **two processes**. Their totals are not comparable to the 2026-08-11
+  three-process totals and must not be quoted as a trend against them.
+- U2 absorbs what was lost: the browser tab was always the unmeasured part, and now it is the only
+  part of the UI there is.
+
+**These have not been re-measured for the two-process shape.** No new number is claimed here.
+
 ### The long-run profile measures private commit, because working set answered a different question
 
 M6 asks whether an extended session grows without bound. The first hour-long run of `bench/soak.py`
