@@ -11,6 +11,10 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    // In production the brain serves this UI and the socket from one origin, so the client derives
+    // its URL from window.location. The dev server is the only place those origins differ, and
+    // proxying /ws makes the same client code correct here as well - one URL, no dev-only branch.
+    proxy: { "/ws": { target: "ws://127.0.0.1:8765", ws: true } },
   },
   test: {
     globals: true,

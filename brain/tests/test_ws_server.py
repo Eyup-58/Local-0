@@ -38,8 +38,7 @@ CLIENT_HELLO = {
 }
 
 
-@pytest.fixture
-def client(tmp_path: Path) -> TestClient:
+def isolated_app(tmp_path: Path, **overrides: object):
     """An app whose workspace, trust file, audit log and memory index are all temporary.
 
     Without these paths, create_app falls back to the real %LOCALAPPDATA%\\LocalZero and a relative
@@ -48,22 +47,69 @@ def client(tmp_path: Path) -> TestClient:
     whatever directory pytest happened to run from, and would write a memory index into the user's
     own profile.
     """
-    return TestClient(
-        create_app(
-            start_pipe_client=False,
-            log=lambda _: None,
-            workspace=tmp_path / "workspace",
-            trust_path=tmp_path / "trust.json",
-            audit_path=tmp_path / "logs" / "audit.jsonl",
-            memory_path=tmp_path / "memory.sqlite",
-        )
-    )
+    defaults: dict[str, object] = {
+        "start_pipe_client": False,
+        "log": lambda _: None,
+        "workspace": tmp_path / "workspace",
+        "trust_path": tmp_path / "trust.json",
+        "audit_path": tmp_path / "logs" / "audit.jsonl",
+        "memory_path": tmp_path / "memory.sqlite",
+    }
+    return create_app(**{**defaults, **overrides})
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> TestClient:
+    return TestClient(isolated_app(tmp_path))
 
 
 def test_the_brain_binds_to_loopback_only() -> None:
     """A local assistant that starts listening on a LAN interface is a different product with a
     different threat model."""
     assert BIND_HOST == "127.0.0.1"
+
+
+def test_the_built_ui_is_served_from_the_same_origin_as_the_socket(tmp_path: Path) -> None:
+    """One origin is what lets the client say ``ws://{location.host}/ws`` instead of a port literal.
+
+    Serving the UI from anywhere else puts the port back into two places, which is the M7 gap.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><title>Local Zero</title>", encoding="utf-8")
+
+    with TestClient(isolated_app(tmp_path, ui_dist=dist)) as client:
+        page = client.get("/")
+
+    assert page.status_code == 200
+    assert "Local Zero" in page.text
+
+
+def test_an_unbuilt_ui_names_the_command_and_leaves_the_socket_working(tmp_path: Path) -> None:
+    """A missing build is a stated fact, not a crash. Everything but the page still works."""
+    lines: list[str] = []
+
+    app = isolated_app(tmp_path, ui_dist=tmp_path / "never-built", log=lines.append)
+    with TestClient(app) as client, client.websocket_connect("/ws") as socket:
+        socket.send_text(json.dumps(CLIENT_HELLO))
+        reply = socket.receive_json()
+
+    assert reply["type"] == "server.hello"
+    assert any("npm run build" in line for line in lines)
+
+
+def test_the_static_mount_does_not_serve_anything_outside_the_build(tmp_path: Path) -> None:
+    """The one new filesystem surface the package adds. A traversal out of dist is refused."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("not for the browser", encoding="utf-8")
+
+    with TestClient(isolated_app(tmp_path, ui_dist=dist)) as client:
+        escaped = client.get("/../secret.txt")
+
+    assert escaped.status_code != 200
+    assert "not for the browser" not in escaped.text
 
 
 def test_a_valid_hello_is_answered_with_server_hello(client: TestClient) -> None:
